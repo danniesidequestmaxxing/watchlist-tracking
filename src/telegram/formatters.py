@@ -282,3 +282,48 @@ def format_health(per_source: dict[str, dict]) -> str:
             lines.append(_row_for(source, per_source[source], ttl_hours=24))
 
     return "\n".join(lines)
+
+
+# Phase 9 — webhook + EDGAR push alerts
+
+
+def format_tradingview_alert(payload: dict | str | None) -> str:
+    """Render a TradingView alert as Telegram HTML.
+
+    Tolerates arbitrary payload shapes — TradingView lets the user define the
+    body. We pull common fields (ticker, exchange, price, alert/message) when
+    present and fall back to a JSON dump when not.
+    """
+    if not isinstance(payload, dict):
+        text = str(payload or "(empty payload)")
+        return f"📢 <b>TradingView</b>\n<pre>{escape(text[:500])}</pre>"
+
+    ticker = payload.get("ticker") or payload.get("symbol") or "?"
+    exchange = payload.get("exchange") or ""
+    alert_name = payload.get("alert") or payload.get("alert_name") or ""
+    message = payload.get("message") or payload.get("description") or ""
+    price = payload.get("price")
+
+    lines = [f"📢 <b>TradingView</b> | {escape(str(ticker))}"]
+    if exchange:
+        lines.append(f"Exchange: {escape(str(exchange))}")
+    if alert_name:
+        lines.append(f"Alert: {escape(str(alert_name))}")
+    if price is not None:
+        try:
+            lines.append(f"Price: <b>{_fmt_price(float(price))}</b>")
+        except (TypeError, ValueError):
+            lines.append(f"Price: {escape(str(price))}")
+    if message:
+        lines.append("")
+        lines.append(escape(str(message))[:1500])
+    return "\n".join(lines)
+
+
+def format_edgar_alert(item: dict) -> str:
+    """Render a single new SEC filing as a push alert."""
+    ticker = escape(str(item.get("ticker", "?")))
+    form = escape(str(item.get("form", "?")))
+    filed = escape(str(item.get("filing_date", "?")))
+    url = escape(str(item.get("source_url", "https://www.sec.gov")))
+    return f'📄 <b>{ticker}</b> | New {form} filed {filed}\n<a href="{url}">View filing</a>'

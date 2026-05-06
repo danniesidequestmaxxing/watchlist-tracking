@@ -1,9 +1,10 @@
 import logging
 
+from aiohttp.web import AppRunner
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application, CommandHandler
 
-from src.config import DB_PATH, TELEGRAM_BOT_TOKEN
+from src.config import DB_PATH, TELEGRAM_BOT_TOKEN, WEBHOOK_PORT, WEBHOOK_TOKEN
 from src.db.schema import init_db
 from src.scheduler.jobs import register_jobs
 from src.telegram.commands import (
@@ -16,29 +17,50 @@ from src.telegram.commands import (
     cmd_snapshot,
     cmd_start,
 )
+from src.webhooks import server as webhook_server
 
 logger = logging.getLogger(__name__)
 
 
 _scheduler: AsyncIOScheduler | None = None
+_webhook_runner: AppRunner | None = None
 
 
 async def _post_init(application: Application) -> None:
     await init_db(DB_PATH)
 
-    global _scheduler
+    global _scheduler, _webhook_runner
     _scheduler = AsyncIOScheduler()
     register_jobs(_scheduler, application)
     _scheduler.start()
+
+    if WEBHOOK_TOKEN:
+        try:
+            _webhook_runner = await webhook_server.start(
+                application.bot, port=WEBHOOK_PORT, token=WEBHOOK_TOKEN
+            )
+        except Exception as exc:
+            logger.exception("Webhook server failed to start: %s", exc)
+            _webhook_runner = None
+    else:
+        logger.info("WEBHOOK_TOKEN unset; skipping webhook server")
+
     logger.info("Telegram bot + scheduler ready")
 
 
 async def _post_shutdown(application: Application) -> None:
-    global _scheduler
+    global _scheduler, _webhook_runner
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
         logger.info("Scheduler stopped")
+    if _webhook_runner is not None:
+        try:
+            await _webhook_runner.cleanup()
+        except Exception as exc:
+            logger.warning("Webhook cleanup failed: %s", exc)
+        _webhook_runner = None
+        logger.info("Webhook server stopped")
 
 
 def build_application() -> Application:

@@ -21,6 +21,10 @@ TTL_SECONDS: dict[str, int] = {
     "news": 30 * 60,
     "sec_filings": 60 * 60,
     "options_expiry": 60 * 60,
+    # Phase 9 — state tracking. The TTL is irrelevant since the EDGAR poller
+    # always reads with an explicit long TTL; the entry is here so cache.write
+    # accepts the data_type.
+    "edgar_seen": 90 * 24 * 60 * 60,
 }
 
 # Tolerated clock skew when accepting a `pulled_at` from an external source.

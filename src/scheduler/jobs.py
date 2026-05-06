@@ -12,13 +12,18 @@ from typing import TYPE_CHECKING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.constants import ParseMode
 
-from src.adapters import finnhub, token_unlocks, trading_economics
+from src.adapters import finnhub, sec_edgar, token_unlocks, trading_economics
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, KL_TZ, OWNER_TELEGRAM_ID
-from src.db import catalysts, health
+from src.db import cache, catalysts, health
 from src.db.watchlist import WatchlistEntry, is_muted, list_entries
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
-from src.telegram.formatters import SOURCE_TTL_HOURS, format_catalyst_output, format_ta_snapshot
+from src.telegram.formatters import (
+    SOURCE_TTL_HOURS,
+    format_catalyst_output,
+    format_edgar_alert,
+    format_ta_snapshot,
+)
 from src.utils.timestamps import is_us_market_open, now_kl
 
 if TYPE_CHECKING:
@@ -186,6 +191,82 @@ async def catalyst_refresh_macro(app: "Application") -> None:
 SILENCE_THRESHOLD_HOURS = 24
 
 
+# ---------------------------------------------------------------------------
+# Phase 9 — EDGAR RSS poller (instant 8-K push notifications)
+# ---------------------------------------------------------------------------
+
+EDGAR_SEEN_TTL = 90 * 24 * 60 * 60  # 90 days; we never want this entry to expire
+
+
+async def _get_seen_accessions(db_path, ticker: str) -> set[str]:
+    payload = await cache.read_if_fresh(
+        db_path, f"edgar_seen:{ticker.upper()}", ttl_seconds=EDGAR_SEEN_TTL
+    )
+    if not payload:
+        return set()
+    return set(payload.get("accessions") or [])
+
+
+async def _set_seen_accessions(db_path, ticker: str, accessions: set[str]) -> None:
+    await cache.write(
+        db_path,
+        cache_key=f"edgar_seen:{ticker.upper()}",
+        data_type="edgar_seen",
+        payload={"accessions": sorted(accessions)},
+        pulled_at=datetime.now(UTC),
+        source_url="https://www.sec.gov",
+        ticker=ticker.upper(),
+    )
+
+
+async def edgar_rss_poll(app: "Application") -> None:
+    """Every 10 minutes — push a Telegram alert for new 8-Ks on watchlist equities.
+
+    First run for a ticker initializes the watermark without firing alerts (so
+    we don't spam the owner with a backlog of pre-existing filings).
+    """
+    logger.info("edgar_rss_poll tick")
+    entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
+    for entry in entries:
+        if entry.asset_class != "equity_us" or is_muted(entry):
+            continue
+        try:
+            result = await sec_edgar.read_sec_filings(
+                DB_PATH, entry.ticker, form_types=["8-K"], days_back=2
+            )
+        except Exception:
+            logger.exception("edgar_rss_poll fetch failed for %s", entry.ticker)
+            continue
+        items = result.get("items") or []
+        if not items:
+            continue
+
+        seen = await _get_seen_accessions(DB_PATH, entry.ticker)
+        first_run = not seen
+        new_items = [it for it in items if it.get("accession") and it["accession"] not in seen]
+        merged = seen | {it["accession"] for it in items if it.get("accession")}
+        await _set_seen_accessions(DB_PATH, entry.ticker, merged)
+
+        if first_run or not new_items:
+            continue
+
+        for item in new_items:
+            try:
+                await app.bot.send_message(
+                    chat_id=OWNER_TELEGRAM_ID,
+                    text=format_edgar_alert(item),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=False,
+                )
+            except Exception as exc:
+                logger.warning("edgar alert send failed for %s: %s", entry.ticker, exc)
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — health heartbeat
+# ---------------------------------------------------------------------------
+
+
 async def health_heartbeat(app: "Application") -> None:
     """Every 6h — flag any tracked source that hasn't checked in for >24h.
 
@@ -294,6 +375,15 @@ def register_jobs(scheduler: AsyncIOScheduler, app: "Application") -> None:
         timezone=KL_TZ,
         jitter=60,
         id="health_heartbeat",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        edgar_rss_poll,
+        args=[app],
+        trigger="cron",
+        minute="*/10",
+        jitter=60,
+        id="edgar_rss_poll",
         replace_existing=True,
     )
     logger.info("Scheduler jobs registered: %s", [j.id for j in scheduler.get_jobs()])

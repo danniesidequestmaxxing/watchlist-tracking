@@ -55,6 +55,11 @@ DB_PATH: Path = Path(os.getenv("DB_PATH", "data/bot.db"))
 
 WATCHLIST_LIMIT: int = 25
 
+# Phase 9 — TradingView webhook ingress. Optional; if WEBHOOK_TOKEN is unset,
+# the webhook server is not started.
+WEBHOOK_TOKEN: str | None = os.getenv("WEBHOOK_TOKEN")
+WEBHOOK_PORT: int = int(os.getenv("WEBHOOK_PORT") or os.getenv("PORT") or "8080")
+
 
 def configure_logging() -> None:
     logging.basicConfig(
