@@ -19,7 +19,7 @@ from anthropic import AsyncAnthropic
 from pydantic import BaseModel, Field, HttpUrl
 from pydantic import ValidationError as PydanticValidationError
 
-from src.adapters import token_unlocks, trading_economics
+from src.adapters import finnhub, sec_edgar, token_unlocks, trading_economics
 from src.catalyst.prompt import build_system_prompt
 from src.catalyst.tools import TOOL_DEFINITIONS
 from src.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL, KL_TZ
@@ -65,6 +65,12 @@ def _default_dispatcher(db_path: Path) -> ToolDispatcher:
                 return await token_unlocks.get_token_unlocks(db_path, **args)
             if name == "get_macro_events":
                 return await trading_economics.get_macro_events(db_path, **args)
+            if name == "get_earnings_calendar":
+                return await finnhub.get_earnings_calendar(db_path, **args)
+            if name == "search_news":
+                return await finnhub.search_news(db_path, **args)
+            if name == "read_sec_filings":
+                return await sec_edgar.read_sec_filings(db_path, **args)
         except Exception as exc:
             logger.exception("Tool dispatch %s raised", name)
             return {"items": [], "error": str(exc)}

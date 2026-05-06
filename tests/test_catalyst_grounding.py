@@ -378,33 +378,157 @@ async def test_agent_no_known_catalysts_passthrough(
 
 
 @pytest.mark.asyncio
-async def test_default_dispatcher_routes_known_tools(
+async def test_default_dispatcher_routes_all_tools(
     db_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: dict[str, dict] = {}
 
-    async def fake_get_token_unlocks(*args, **kwargs):
-        calls["token_unlocks"] = kwargs
-        return {"items": [], "pulled_at": "", "source_url": ""}
+    async def _fake(name):
+        async def inner(*args, **kwargs):
+            calls[name] = kwargs
+            return {"items": [], "pulled_at": "", "source_url": ""}
 
-    async def fake_get_macro_events(*args, **kwargs):
-        calls["macro"] = kwargs
-        return {"items": [], "pulled_at": "", "source_url": ""}
+        return inner
 
     monkeypatch.setattr(
-        "src.catalyst.agent.token_unlocks.get_token_unlocks", fake_get_token_unlocks
+        "src.catalyst.agent.token_unlocks.get_token_unlocks", await _fake("token_unlocks")
     )
     monkeypatch.setattr(
-        "src.catalyst.agent.trading_economics.get_macro_events", fake_get_macro_events
+        "src.catalyst.agent.trading_economics.get_macro_events", await _fake("macro")
     )
+    monkeypatch.setattr("src.catalyst.agent.finnhub.get_earnings_calendar", await _fake("earnings"))
+    monkeypatch.setattr("src.catalyst.agent.finnhub.search_news", await _fake("news"))
+    monkeypatch.setattr("src.catalyst.agent.sec_edgar.read_sec_filings", await _fake("sec"))
 
     dispatcher = agent_mod._default_dispatcher(db_path)
 
     await dispatcher("get_token_unlocks", {"symbol": "SOL", "days_ahead": 7})
     await dispatcher("get_macro_events", {"days_ahead": 14, "importance_min": 2})
+    await dispatcher("get_earnings_calendar", {"ticker": "NVDA", "days_ahead": 60})
+    await dispatcher("search_news", {"query": "NVDA", "days_back": 7})
+    await dispatcher("read_sec_filings", {"ticker": "NVDA", "form_types": ["8-K"], "days_back": 30})
     unknown = await dispatcher("nope", {})
 
     assert calls["token_unlocks"] == {"symbol": "SOL", "days_ahead": 7}
     assert calls["macro"] == {"days_ahead": 14, "importance_min": 2}
+    assert calls["earnings"] == {"ticker": "NVDA", "days_ahead": 60}
+    assert calls["news"] == {"query": "NVDA", "days_back": 7}
+    assert calls["sec"] == {"ticker": "NVDA", "form_types": ["8-K"], "days_back": 30}
     assert unknown["items"] == []
     assert "unknown tool" in unknown["error"]
+
+
+@pytest.mark.asyncio
+async def test_agent_equity_path_with_earnings_and_filings(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end equity flow: earnings (future) + 8-K (past, news) + news themes."""
+    monkeypatch.setattr(agent_mod, "ANTHROPIC_MODEL", "fake-model-id")
+
+    today = datetime.now(agent_mod.KL_TZ).date()
+    earnings_date = today + timedelta(days=14)
+    filing_date = today - timedelta(days=2)
+    news_date = today - timedelta(days=1)
+
+    earnings_payload = {
+        "items": [
+            {
+                "ticker": "NVDA",
+                "earnings_date": earnings_date.isoformat(),
+                "event_date": earnings_date.isoformat(),
+                "hour": "amc",
+                "source_url": "https://finnhub.io",
+            }
+        ],
+        "pulled_at": datetime.now(UTC).isoformat(),
+        "source_url": "https://finnhub.io",
+    }
+    sec_payload = {
+        "items": [
+            {
+                "ticker": "NVDA",
+                "form": "8-K",
+                "filing_date": filing_date.isoformat(),
+                "event_date": filing_date.isoformat(),
+                "source_url": "https://www.sec.gov/Archives/edgar/data/1045810/x.htm",
+            }
+        ],
+        "pulled_at": datetime.now(UTC).isoformat(),
+        "source_url": "https://www.sec.gov",
+    }
+    news_payload = {
+        "items": [
+            {
+                "headline": "NVDA earnings preview",
+                "summary": "anticipation",
+                "date": news_date.isoformat(),
+                "source_url": "https://news.example.com/nvda",
+            }
+        ],
+        "pulled_at": datetime.now(UTC).isoformat(),
+        "source_url": "https://finnhub.io",
+    }
+
+    async def fake_dispatcher(name, args):
+        return {
+            "get_earnings_calendar": earnings_payload,
+            "read_sec_filings": sec_payload,
+            "search_news": news_payload,
+        }.get(name, {"items": [], "error": f"unknown: {name}"})
+
+    final = json.dumps(
+        {
+            "ticker": "NVDA",
+            "as_of": datetime.now(UTC).isoformat(),
+            "no_known_catalysts": False,
+            "confirmed": [
+                {
+                    "event_type": "earnings",
+                    "event_date": earnings_date.isoformat(),
+                    "description": "NVDA earnings (amc)",
+                    "source_url": "https://finnhub.io",
+                    "source_pulled_at": datetime.now(UTC).isoformat(),
+                }
+            ],
+            "expected": [],
+            "speculative": [],
+            "news_themes": [
+                {
+                    "summary": "Recent 8-K filing",
+                    "date": filing_date.isoformat(),
+                    "source_url": "https://www.sec.gov/Archives/edgar/data/1045810/x.htm",
+                },
+                {
+                    "summary": "Earnings preview coverage",
+                    "date": news_date.isoformat(),
+                    "source_url": "https://news.example.com/nvda",
+                },
+            ],
+            "flags": [],
+        }
+    )
+
+    earnings_block = _Block(
+        "tool_use", name="get_earnings_calendar", input={"ticker": "NVDA"}, id="t1"
+    )
+    sec_block = _Block("tool_use", name="read_sec_filings", input={"ticker": "NVDA"}, id="t2")
+    news_block = _Block("tool_use", name="search_news", input={"query": "NVDA"}, id="t3")
+    fake = _FakeAnthropic(
+        [
+            _Response(
+                content=[earnings_block, sec_block, news_block],
+                stop_reason="tool_use",
+            ),
+            _text_response(final),
+        ]
+    )
+
+    out = await run_catalyst_agent(
+        "NVDA", "equity_us", db_path, anthropic_client=fake, tool_dispatcher=fake_dispatcher
+    )
+
+    assert out.ticker == "NVDA"
+    assert [e.event_date for e in out.confirmed] == [earnings_date]
+    news_dates = sorted(n.date for n in out.news_themes)
+    assert filing_date in news_dates
+    assert news_date in news_dates
