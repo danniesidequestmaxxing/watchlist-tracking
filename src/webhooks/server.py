@@ -7,6 +7,7 @@ URL-path token compared against `WEBHOOK_TOKEN`. Configure TradingView with
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -42,7 +43,7 @@ async def _read_payload(request: web.Request) -> Any:
 async def _handle_tradingview(request: web.Request) -> web.Response:
     expected = request.app[TOKEN_KEY]
     token = request.match_info.get("token", "")
-    if not expected or token != expected:
+    if not expected or not hmac.compare_digest(token, expected):
         logger.warning("Webhook auth rejected (token mismatch)")
         return web.Response(status=403, text="forbidden")
 

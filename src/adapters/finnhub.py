@@ -77,14 +77,15 @@ async def get_earnings_calendar(
 
     end = pulled_at + timedelta(days=days_ahead)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers={"X-Finnhub-Token": FINNHUB_API_KEY}
+        ) as client:
             resp = await client.get(
                 f"{API_BASE}/calendar/earnings",
                 params={
                     "symbol": sym,
                     "from": pulled_at.date().isoformat(),
                     "to": end.date().isoformat(),
-                    "token": FINNHUB_API_KEY,
                 },
             )
             resp.raise_for_status()
@@ -179,14 +180,15 @@ async def search_news(
     start = today - timedelta(days=days_back)
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers={"X-Finnhub-Token": FINNHUB_API_KEY}
+        ) as client:
             resp = await client.get(
                 f"{API_BASE}/company-news",
                 params={
                     "symbol": sym,
                     "from": start.isoformat(),
                     "to": today.isoformat(),
-                    "token": FINNHUB_API_KEY,
                 },
             )
             resp.raise_for_status()

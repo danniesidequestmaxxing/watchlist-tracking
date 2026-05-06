@@ -1,8 +1,11 @@
 """Scheduled jobs per spec §5.7.
 
-Phase 4 wired ta_refresh_crypto + ta_refresh_equity_us. Phase 7 adds the
-catalyst refresh trio and the 07:00 KL daily_digest. Phase 8 adds the
-6-hourly health_heartbeat. The Bursa equity_my refresh waits on Phase 10.
+All §5.7 jobs are wired here:
+- ta_refresh_crypto, ta_refresh_equity_us, ta_refresh_equity_my
+- catalyst_refresh_unlocks, catalyst_refresh_macro, catalyst_refresh_earnings
+- daily_digest (07:00 KL)
+- health_heartbeat (4×/day)
+- edgar_rss_poll (every 10m, Phase 9)
 """
 
 import logging
@@ -50,7 +53,9 @@ async def _push_snapshot(app: "Application", entry: WatchlistEntry) -> None:
     source_label = "yfinance" if is_equity else f"ccxt:{entry.exchange}"
     try:
         if entry.asset_class == "crypto":
-            assert entry.exchange is not None
+            if not entry.exchange:
+                logger.warning("Skipping crypto entry %s with no exchange", entry.ticker)
+                return
             snap = await get_crypto_snapshot(
                 DB_PATH, entry.ticker, entry.exchange, force_refresh=True
             )
@@ -199,10 +204,6 @@ async def catalyst_refresh_macro(app: "Application") -> None:
         logger.exception("macro refresh failed")
 
 
-# ---------------------------------------------------------------------------
-# Phase 8 — health heartbeat
-# ---------------------------------------------------------------------------
-
 # A source that hasn't logged anything within this window is considered silent
 # and the heartbeat writes an "error" row so /health surfaces a ❌.
 SILENCE_THRESHOLD_HOURS = 24
@@ -213,6 +214,7 @@ SILENCE_THRESHOLD_HOURS = 24
 # ---------------------------------------------------------------------------
 
 EDGAR_SEEN_TTL = 90 * 24 * 60 * 60  # 90 days; we never want this entry to expire
+EDGAR_WATERMARK_CAP = 200  # Per-ticker accession backlog kept in the watermark.
 
 
 async def _get_seen_accessions(db_path, ticker: str) -> set[str]:
@@ -225,11 +227,15 @@ async def _get_seen_accessions(db_path, ticker: str) -> set[str]:
 
 
 async def _set_seen_accessions(db_path, ticker: str, accessions: set[str]) -> None:
+    # Sort lexicographically; SEC accession numbers have a year prefix that
+    # roughly correlates with chronology, so dropping the smallest is a
+    # reasonable approximation of "evict oldest".
+    capped = sorted(accessions)[-EDGAR_WATERMARK_CAP:]
     await cache.write(
         db_path,
         cache_key=f"edgar_seen:{ticker.upper()}",
         data_type="edgar_seen",
-        payload={"accessions": sorted(accessions)},
+        payload={"accessions": capped},
         pulled_at=datetime.now(UTC),
         source_url="https://www.sec.gov",
         ticker=ticker.upper(),
@@ -248,8 +254,10 @@ async def edgar_rss_poll(app: "Application") -> None:
         if entry.asset_class != "equity_us" or is_muted(entry):
             continue
         try:
+            # Bypass the 1h sec_filings cache so the 10-min poll cadence
+            # actually catches new filings inside its window (Phase 9 SLA).
             result = await sec_edgar.read_sec_filings(
-                DB_PATH, entry.ticker, form_types=["8-K"], days_back=2
+                DB_PATH, entry.ticker, form_types=["8-K"], days_back=2, force_refresh=True
             )
         except Exception:
             logger.exception("edgar_rss_poll fetch failed for %s", entry.ticker)
@@ -288,9 +296,11 @@ async def health_heartbeat(app: "Application") -> None:
     """Every 6h — flag any tracked source that hasn't checked in for >24h.
 
     Skips sources with a recent ok/error row; only writes when a source has
-    been silent past the threshold or has never been seen at all.
+    been silent past the threshold or has never been seen at all. Also
+    prunes health_log entries older than 14 days to keep the table bounded.
     """
     logger.info("health_heartbeat tick")
+    await health.prune_older_than(DB_PATH, days=14)
     rows = await health.latest_per_source(DB_PATH)
     now = datetime.now(UTC)
     threshold_seconds = SILENCE_THRESHOLD_HOURS * 3600
@@ -315,7 +325,7 @@ async def health_heartbeat(app: "Application") -> None:
 
 
 def register_jobs(scheduler: AsyncIOScheduler, app: "Application") -> None:
-    """Wire every job from spec §5.7 (minus equity_my and health heartbeat).
+    """Wire every job from spec §5.7 plus the Phase 9 EDGAR poller.
 
     All jitter values are 60s per §5.5; KL-anchored jobs use the configured
     `KL_TZ` so they fire at the correct local-clock time regardless of host

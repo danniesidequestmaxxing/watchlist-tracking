@@ -209,21 +209,30 @@ def _ta_cache_key(ticker: str, exchange: str | None) -> str:
 
 
 def validate_ta_snapshot(snap: TASnapshot) -> list[str]:
-    """Return a list of human-readable issues. Empty list means clean."""
+    """Return a list of human-readable issues. Empty list means clean.
+
+    Uses `in_range` (which rejects NaN/inf) for every numeric field so a
+    silent NaN (e.g. yfinance returning NaN volume on illiquid bars) is
+    caught instead of being shipped to Telegram.
+    """
     issues: list[str] = []
     if not in_range(snap.price, 0, 1e15) or snap.price <= 0:
         issues.append(f"price not in (0, 1e15]: {snap.price}")
-    if snap.volume < 0:
-        issues.append(f"volume negative: {snap.volume}")
+    if not in_range(snap.volume, 0, 1e18):
+        issues.append(f"volume not finite or negative: {snap.volume}")
     if snap.rsi_14 is not None and not in_range(snap.rsi_14, 0, 100):
         issues.append(f"RSI out of [0,100]: {snap.rsi_14}")
-    if snap.atr_14 is not None and snap.atr_14 < 0:
-        issues.append(f"ATR negative: {snap.atr_14}")
+    if snap.atr_14 is not None and not in_range(snap.atr_14, 0, 1e15):
+        issues.append(f"ATR not finite or negative: {snap.atr_14}")
     if snap.bb_upper is not None and snap.bb_lower is not None and snap.bb_upper < snap.bb_lower:
         issues.append(f"bb_upper < bb_lower: {snap.bb_upper} < {snap.bb_lower}")
-    if snap.high_24h < snap.low_24h:
+    if not in_range(snap.high_24h, 0, 1e15) or not in_range(snap.low_24h, 0, 1e15):
+        issues.append(f"24h H/L not finite: {snap.high_24h} / {snap.low_24h}")
+    elif snap.high_24h < snap.low_24h:
         issues.append(f"high_24h < low_24h: {snap.high_24h} < {snap.low_24h}")
-    if snap.high_7d < snap.low_7d:
+    if not in_range(snap.high_7d, 0, 1e15) or not in_range(snap.low_7d, 0, 1e15):
+        issues.append(f"7d H/L not finite: {snap.high_7d} / {snap.low_7d}")
+    elif snap.high_7d < snap.low_7d:
         issues.append(f"high_7d < low_7d: {snap.high_7d} < {snap.low_7d}")
     return issues
 

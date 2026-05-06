@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS catalyst_events (
   ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_catalyst_lookup ON catalyst_events(ticker, event_date);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalyst_unique
+  ON catalyst_events(ticker, event_type, event_date, confidence);
 
 CREATE TABLE IF NOT EXISTS health_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

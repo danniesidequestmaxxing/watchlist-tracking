@@ -18,6 +18,13 @@ API_BASE = "https://api.tradingeconomics.com"
 HEALTH_SOURCE = "trading-economics"
 
 
+def _redact(msg: str, secret: str | None) -> str:
+    """Strip a secret from an error string before logging or persisting it."""
+    if secret and secret in msg:
+        return msg.replace(secret, "***")
+    return msg
+
+
 def _empty(pulled_at: datetime, error: str | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "items": [],
@@ -111,9 +118,13 @@ async def get_macro_events(
             resp.raise_for_status()
             raw = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("trading_economics fetch failed: %s", exc)
-        await health.record(db_path, source=HEALTH_SOURCE, status="error", details=str(exc))
-        return _empty(pulled_at, error=str(exc))
+        # The Trading Economics API requires the token in the URL query, so
+        # we have to scrub it from any error string before logging or
+        # persisting to health_log.
+        safe = _redact(str(exc), TRADING_ECONOMICS_API_KEY)
+        logger.warning("trading_economics fetch failed: %s", safe)
+        await health.record(db_path, source=HEALTH_SOURCE, status="error", details=safe)
+        return _empty(pulled_at, error=safe)
 
     if not isinstance(raw, list):
         logger.warning("trading_economics returned unexpected payload: %r", type(raw).__name__)

@@ -1,6 +1,7 @@
 """Token Unlocks adapter — Phase 5 catalyst tool source for crypto unlocks."""
 
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,10 @@ logger = logging.getLogger(__name__)
 SOURCE_URL = "https://token.unlocks.app"
 API_BASE = "https://api.token.unlocks.app/v1"
 HEALTH_SOURCE = "token-unlocks"
+
+# Symbols are interpolated into the URL path so we restrict to a safe charset
+# even though only the catalyst agent calls this with grounded ticker values.
+_SYMBOL_RE = re.compile(r"^[A-Z0-9_-]{1,20}$")
 
 
 def _empty(pulled_at: datetime, error: str | None = None) -> dict[str, Any]:
@@ -40,10 +45,17 @@ def _parse_date(raw: str | None) -> date | None:
         return None
 
 
-def _normalize(raw: dict[str, Any], symbol: str, cutoff: date, today: date) -> list[dict[str, Any]]:
-    items_raw = raw.get("data") or raw.get("items") or raw.get("unlocks") or []
+def _normalize(raw: Any, symbol: str, cutoff: date, today: date) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        items_raw: list[Any] = raw
+    elif isinstance(raw, dict):
+        items_raw = raw.get("data") or raw.get("items") or raw.get("unlocks") or []
+    else:
+        return []
     items: list[dict[str, Any]] = []
     for entry in items_raw:
+        if not isinstance(entry, dict):
+            continue
         unlock_date = _parse_date(entry.get("date") or entry.get("unlock_date"))
         if unlock_date is None or unlock_date < today or unlock_date > cutoff:
             continue
@@ -73,14 +85,16 @@ async def get_token_unlocks(
     Errors return {"items": [], "error": "..."} — never raises into the LLM
     loop per spec §5.4.
     """
-    sym = symbol.upper()
-    cache_key = f"token_unlocks:{sym}:{days_ahead}"
+    sym = symbol.upper().strip()
+    pulled_at = datetime.now(UTC)
+    if not _SYMBOL_RE.match(sym):
+        return _empty(pulled_at, error=f"invalid symbol shape: {sym!r}")
 
+    cache_key = f"token_unlocks:{sym}:{days_ahead}"
     cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["token_unlocks"])
     if cached is not None:
         return cached
 
-    pulled_at = datetime.now(UTC)
     cutoff = pulled_at.date() + timedelta(days=days_ahead)
 
     if not TOKEN_UNLOCKS_API_KEY:

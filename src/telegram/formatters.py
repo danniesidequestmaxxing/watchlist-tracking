@@ -4,7 +4,7 @@ from html import escape
 from urllib.parse import urlparse
 
 from src.catalyst.agent import CatalystEvent, CatalystOutput, NewsTheme
-from src.db.watchlist import WatchlistEntry
+from src.db.watchlist import WatchlistEntry, is_muted
 from src.ta.pipeline import TASnapshot, validate_ta_snapshot
 
 logger = logging.getLogger(__name__)
@@ -16,11 +16,11 @@ def format_watchlist(entries: list[WatchlistEntry]) -> str:
 
     lines = [f"📋 <b>Watchlist ({len(entries)} active)</b>", ""]
     for entry in entries:
-        is_muted = entry.muted_until is not None
-        marker = "🔴" if is_muted else "🟢"
+        muted = is_muted(entry)
+        marker = "🔴" if muted else "🟢"
         ticker = escape(entry.ticker)
         exch = f" ({escape(entry.exchange)})" if entry.exchange else ""
-        suffix = "  muted" if is_muted else ""
+        suffix = "  muted" if muted else ""
         lines.append(f"{marker} <b>{ticker}</b>{exch} — {entry.asset_class}{suffix}")
     return "\n".join(lines)
 
@@ -124,9 +124,10 @@ def format_ta_snapshot(snap: TASnapshot) -> str:
     issues = validate_ta_snapshot(snap)
     if issues:
         logger.warning("Refusing to format invalid TA snapshot: %s", issues)
+        joined = "; ".join(issues[:3])
         return (
             f"📊 <b>{escape(snap.ticker)}</b> | data unavailable "
-            f"(failed validation: {escape(issues[0])})"
+            f"(failed validation: {escape(joined)})"
         )
 
     ticker = escape(snap.ticker)

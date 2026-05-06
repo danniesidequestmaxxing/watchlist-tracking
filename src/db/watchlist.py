@@ -44,7 +44,13 @@ async def add_entry(
     exchange: str | None = None,
     notes: str | None = None,
 ) -> int | None:
-    """Insert a row. Returns new id, or None if it would violate the UNIQUE constraint."""
+    """Insert a row. Returns new id, or None if it would violate the UNIQUE constraint.
+
+    Empty string is stored when `exchange` is None so the (user_id, ticker,
+    exchange) UNIQUE constraint actually rejects duplicate non-crypto entries
+    — SQLite treats NULL as distinct from NULL in UNIQUE indexes.
+    """
+    exchange_val = exchange or ""
     async with aiosqlite.connect(db_path) as db:
         try:
             cursor = await db.execute(
@@ -52,7 +58,7 @@ async def add_entry(
                 INSERT INTO watchlist (user_id, ticker, asset_class, exchange, notes)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (user_id, ticker, asset_class, exchange, notes),
+                (user_id, ticker, asset_class, exchange_val, notes),
             )
             await db.commit()
             return cursor.lastrowid

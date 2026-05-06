@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -43,9 +43,9 @@ async def save_events(
     if not rows:
         return 0
     async with aiosqlite.connect(db_path) as db:
-        await db.executemany(
+        cursor = await db.executemany(
             """
-            INSERT INTO catalyst_events
+            INSERT OR IGNORE INTO catalyst_events
               (ticker, event_type, event_date, confidence,
                description, source_url, source_pulled_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -53,13 +53,19 @@ async def save_events(
             rows,
         )
         await db.commit()
-    logger.info("Persisted %d catalyst events for %s", len(rows), ticker)
-    return len(rows)
+        inserted = cursor.rowcount
+    logger.info(
+        "Persisted %d new catalyst events for %s (%d submitted)",
+        inserted,
+        ticker,
+        len(rows),
+    )
+    return inserted
 
 
 async def next_event_for(db_path: Path, ticker: str, today: str | None = None) -> dict | None:
     """Return the soonest future catalyst row for `ticker`, or None."""
-    today_iso = today or datetime.utcnow().date().isoformat()
+    today_iso = today or datetime.now(UTC).date().isoformat()
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(

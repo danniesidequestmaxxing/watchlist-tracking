@@ -112,7 +112,10 @@ async def test_get_earnings_calendar_end_to_end(
     def handler(request: httpx.Request) -> httpx.Response:
         assert "calendar/earnings" in str(request.url)
         assert request.url.params["symbol"] == "NVDA"
-        assert request.url.params["token"] == "fake-key"
+        # Token is now in a header, not the URL — confirms no key leakage in
+        # the request line / error logs.
+        assert "token" not in request.url.params
+        assert request.headers.get("X-Finnhub-Token") == "fake-key"
         return httpx.Response(200, json=raw_payload)
 
     transport = httpx.MockTransport(handler)

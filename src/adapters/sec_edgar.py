@@ -131,15 +131,22 @@ async def read_sec_filings(
     ticker: str,
     form_types: list[str] | None = None,
     days_back: int = 30,
+    *,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """Tool dispatcher for `read_sec_filings`. Returns {items, pulled_at, source_url}."""
+    """Tool dispatcher for `read_sec_filings`. Returns {items, pulled_at, source_url}.
+
+    `force_refresh` bypasses the 1h cache; the EDGAR push poller uses this to
+    keep its 10-minute detection latency.
+    """
     sym = ticker.upper()
     forms = list(form_types) if form_types else ["8-K", "10-Q"]
     cache_key = f"sec_filings:{sym}:{','.join(sorted(forms))}:{days_back}"
 
-    cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["sec_filings"])
-    if cached is not None:
-        return cached
+    if not force_refresh:
+        cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["sec_filings"])
+        if cached is not None:
+            return cached
 
     pulled_at = datetime.now(UTC)
     cutoff = pulled_at.date() - timedelta(days=days_back)

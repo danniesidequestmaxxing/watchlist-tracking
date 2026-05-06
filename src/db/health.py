@@ -36,6 +36,26 @@ def _parse_ts(raw: str) -> datetime:
     return dt
 
 
+async def prune_older_than(db_path: Path, days: int = 14) -> int:
+    """Delete health_log rows older than `days` days. Returns row count deleted."""
+    if days <= 0:
+        return 0
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM health_log WHERE recorded_at < datetime('now', ?)",
+                (f"-{days} days",),
+            )
+            await db.commit()
+            deleted = cursor.rowcount
+        if deleted:
+            logger.info("Pruned %d health_log rows older than %dd", deleted, days)
+        return deleted
+    except Exception as exc:
+        logger.warning("health_log prune failed: %s", exc)
+        return 0
+
+
 async def latest_per_source(db_path: Path) -> dict[str, dict[str, Any]]:
     """Return the latest health_log row for every distinct source.
 

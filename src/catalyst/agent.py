@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 ToolDispatcher = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+# Reuse one Anthropic client across calls so we keep the underlying httpx
+# connection pool warm and don't leak connections per /catalyst.
+_shared_client: AsyncAnthropic | None = None
+
+
+def _get_shared_client() -> AsyncAnthropic:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    return _shared_client
+
+
 class CatalystEvent(BaseModel):
     event_type: str
     event_date: date
@@ -137,7 +149,7 @@ async def run_catalyst_agent(
     max_turns: int = 8,
 ) -> CatalystOutput:
     """Run one catalyst-agent invocation; return the validated, grounded output."""
-    client = anthropic_client or AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    client = anthropic_client or _get_shared_client()
     dispatcher = tool_dispatcher or _default_dispatcher(db_path)
 
     now_kl = datetime.now(KL_TZ)
