@@ -126,7 +126,8 @@ async def test_webhook_accepts_valid_token_and_dispatches(http_client) -> None:
     )
     assert resp.status == 200
     body = await resp.json()
-    assert body == {"ok": True}
+    assert body["ok"] is True
+    assert body["delivered"] >= 1
     assert len(bot.sent) == 1
     assert "BTCUSDT" in bot.sent[0]["text"]
 

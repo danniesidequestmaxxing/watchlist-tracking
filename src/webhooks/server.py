@@ -13,9 +13,9 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
-from telegram.constants import ParseMode
 
-from src.config import OWNER_TELEGRAM_ID, WEBHOOK_PORT, WEBHOOK_TOKEN
+from src.config import WEBHOOK_PORT, WEBHOOK_TOKEN
+from src.telegram.broadcast import broadcast
 from src.telegram.formatters import format_tradingview_alert
 
 if TYPE_CHECKING:
@@ -51,11 +51,13 @@ async def _handle_tradingview(request: web.Request) -> web.Response:
     text = format_tradingview_alert(payload)
     bot: Bot = request.app[BOT_KEY]
     try:
-        await bot.send_message(chat_id=OWNER_TELEGRAM_ID, text=text, parse_mode=ParseMode.HTML)
+        sent = await broadcast(bot, text)
     except Exception as exc:
-        logger.exception("Telegram send failed for TradingView alert: %s", exc)
+        logger.exception("Telegram broadcast failed for TradingView alert: %s", exc)
         return web.json_response({"ok": False, "error": str(exc)}, status=502)
-    return web.json_response({"ok": True})
+    if sent == 0:
+        return web.json_response({"ok": False, "error": "no recipients reachable"}, status=502)
+    return web.json_response({"ok": True, "delivered": sent})
 
 
 async def _handle_health(request: web.Request) -> web.Response:

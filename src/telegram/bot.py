@@ -2,18 +2,23 @@ import logging
 
 from aiohttp.web import AppRunner
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from src.config import DB_PATH, TELEGRAM_BOT_TOKEN, WEBHOOK_PORT, WEBHOOK_TOKEN
 from src.db.schema import init_db
 from src.scheduler.jobs import register_jobs
 from src.telegram.commands import (
     cmd_add,
+    cmd_addmany,
     cmd_catalyst,
     cmd_digest,
+    cmd_forwards,
+    cmd_grant,
     cmd_health,
     cmd_list,
+    cmd_on_new_chat_members,
     cmd_remove,
+    cmd_revoke,
     cmd_snapshot,
     cmd_start,
 )
@@ -73,10 +78,16 @@ def build_application() -> Application:
     )
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("add", cmd_add))
+    app.add_handler(CommandHandler("addmany", cmd_addmany))
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("snapshot", cmd_snapshot))
     app.add_handler(CommandHandler("catalyst", cmd_catalyst))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("health", cmd_health))
+    app.add_handler(CommandHandler("grant", cmd_grant))
+    app.add_handler(CommandHandler("revoke", cmd_revoke))
+    app.add_handler(CommandHandler("forwards", cmd_forwards))
+    # Fires when the bot itself is added to a new chat → DMs owner with chat_id.
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, cmd_on_new_chat_members))
     return app

@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS health_log (
   recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_health_recent ON health_log(source, recorded_at);
+
+CREATE TABLE IF NOT EXISTS forward_targets (
+  chat_id INTEGER PRIMARY KEY,
+  label TEXT,
+  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram.constants import ParseMode
 
 from src.adapters import finnhub, sec_edgar, token_unlocks, trading_economics
 from src.catalyst.agent import run_catalyst_agent
@@ -21,6 +20,7 @@ from src.config import DB_PATH, KL_TZ, OWNER_TELEGRAM_ID
 from src.db import cache, catalysts, health
 from src.db.watchlist import WatchlistEntry, is_muted, list_entries
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
+from src.telegram.broadcast import broadcast
 from src.telegram.formatters import (
     SOURCE_TTL_HOURS,
     format_catalyst_output,
@@ -41,10 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 async def _send(app: "Application", text: str) -> None:
-    try:
-        await app.bot.send_message(chat_id=OWNER_TELEGRAM_ID, text=text, parse_mode=ParseMode.HTML)
-    except Exception as exc:
-        logger.warning("Telegram send failed: %s", exc)
+    """Fan out to owner DM + every chat in `forward_targets`."""
+    await broadcast(app.bot, text)
 
 
 async def _push_snapshot(app: "Application", entry: WatchlistEntry) -> None:
@@ -277,10 +275,9 @@ async def edgar_rss_poll(app: "Application") -> None:
 
         for item in new_items:
             try:
-                await app.bot.send_message(
-                    chat_id=OWNER_TELEGRAM_ID,
-                    text=format_edgar_alert(item),
-                    parse_mode=ParseMode.HTML,
+                await broadcast(
+                    app.bot,
+                    format_edgar_alert(item),
                     disable_web_page_preview=False,
                 )
             except Exception as exc:

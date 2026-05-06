@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from src.adapters import bursa
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
-from src.db import catalysts, health
+from src.db import catalysts, forwards, health
 from src.db.watchlist import (
     WatchlistEntry,
     add_entry,
@@ -37,7 +37,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if msg is None:
         return
     await msg.reply_text(
-        "Bot online. Commands: /add /remove /list /snapshot /catalyst /digest /health."
+        "Bot online. Commands: /add /addmany /remove /list /snapshot /catalyst "
+        "/digest /health /grant /revoke /forwards."
     )
 
 
@@ -77,6 +78,72 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     suffix = f" ({exchange})" if exchange else ""
     await msg.reply_text(f"Added {ticker}{suffix} as {asset_class}.")
+
+
+def _parse_bulk_token(token: str) -> tuple[str, str | None]:
+    """Split `TICKER` or `TICKER:exchange` into (ticker, exchange|None)."""
+    parts = token.split(":", 1)
+    ticker = parts[0].upper().strip()
+    exchange = parts[1].lower().strip() if len(parts) == 2 and parts[1].strip() else None
+    return ticker, exchange
+
+
+@require_owner
+async def cmd_addmany(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Bulk-add multiple tickers in one command.
+
+    Token format: `TICKER` or `TICKER:exchange`. Crypto must include the
+    exchange (`BTCUSDT:binance`); equities don't take one (`NVDA`, `5347`).
+    """
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: /addmany BTCUSDT:binance ETHUSDT:binance SOLUSDT:okx NVDA META 5347"
+        )
+        return
+
+    current = await count_entries(DB_PATH, OWNER_TELEGRAM_ID)
+    capacity = WATCHLIST_LIMIT - current
+
+    added: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+    capped: list[str] = []
+
+    for raw in args:
+        ticker, exchange = _parse_bulk_token(raw)
+        if not ticker:
+            failed.append(f"❌ <code>{raw}</code> empty ticker")
+            continue
+        asset_class = detect_asset_class(ticker)
+        if asset_class is None:
+            failed.append(f"❌ <code>{ticker}</code> couldn't classify")
+            continue
+        if len(added) >= capacity:
+            capped.append(f"⏸ <code>{ticker}</code> watchlist full")
+            continue
+        new_id = await add_entry(DB_PATH, OWNER_TELEGRAM_ID, ticker, asset_class, exchange)
+        if new_id is None:
+            label = f"{ticker}" + (f" on {exchange}" if exchange else "")
+            skipped.append(f"⏭ <code>{label}</code> already on watchlist")
+            continue
+        suffix = f" ({exchange})" if exchange else ""
+        added.append(f"🟢 <code>{ticker}{suffix}</code> {asset_class}")
+
+    summary = (
+        f"<b>Bulk add</b>: {len(added)} added · {len(skipped)} skipped · "
+        f"{len(failed)} failed · {len(capped)} capped "
+        f"({current + len(added)}/{WATCHLIST_LIMIT} used)"
+    )
+    lines = [summary, ""]
+    lines.extend(added)
+    lines.extend(skipped)
+    lines.extend(failed)
+    lines.extend(capped)
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
 @require_owner
@@ -273,3 +340,116 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     rows = await health.latest_per_source(DB_PATH)
     await msg.reply_text(format_health(rows), parse_mode=ParseMode.HTML)
+
+
+# ---------------------------------------------------------------------------
+# Forward-target management (Phase 11 group fan-out)
+# ---------------------------------------------------------------------------
+
+
+@require_owner
+async def cmd_grant(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/grant <chat_id> [label]` — add a chat to the broadcast fan-out."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: /grant <chat_id> [label]\n"
+            "Add the bot to the chat first; it will DM you the chat_id."
+        )
+        return
+    try:
+        chat_id = int(args[0])
+    except ValueError:
+        await msg.reply_text(f"Bad chat_id: {args[0]!r} (must be an integer).")
+        return
+    label = " ".join(args[1:]).strip() or None
+    inserted = await forwards.add_target(DB_PATH, chat_id, label)
+    if not inserted:
+        await msg.reply_text(
+            f"Chat <code>{chat_id}</code> is already a forward target.", parse_mode=ParseMode.HTML
+        )
+        return
+    suffix = f" ({label})" if label else ""
+    await msg.reply_text(
+        f"Granted: chat <code>{chat_id}</code>{suffix} will now receive every push.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@require_owner
+async def cmd_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/revoke <chat_id>` — remove a chat from the broadcast fan-out."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text("Usage: /revoke <chat_id>")
+        return
+    try:
+        chat_id = int(args[0])
+    except ValueError:
+        await msg.reply_text(f"Bad chat_id: {args[0]!r}.")
+        return
+    rows = await forwards.remove_target(DB_PATH, chat_id)
+    if rows == 0:
+        await msg.reply_text(
+            f"Chat <code>{chat_id}</code> wasn't a forward target.", parse_mode=ParseMode.HTML
+        )
+    else:
+        await msg.reply_text(
+            f"Revoked: chat <code>{chat_id}</code> no longer receives pushes.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+@require_owner
+async def cmd_forwards(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List the current forward targets."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    targets = await forwards.list_targets(DB_PATH)
+    if not targets:
+        await msg.reply_text(
+            "📡 No additional forward targets — pushes go to owner DM only.\n"
+            "Add the bot to a chat, then /grant &lt;chat_id&gt;.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    lines = ["📡 <b>Forward targets</b> (in addition to owner DM)", ""]
+    for t in targets:
+        label = f" — {t['label']}" if t.get("label") else ""
+        lines.append(f"• <code>{t['chat_id']}</code>{label}")
+    await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+# Update the StatusUpdate handler — fires when the bot is added to a new chat,
+# so the owner gets the chat_id without having to look it up manually.
+
+
+async def cmd_on_new_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """When the bot itself is added to a chat, DM the owner with the chat_id."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    new_members = msg.new_chat_members or []
+    bot_id = context.bot.id
+    if not any(m.id == bot_id for m in new_members):
+        return
+    title = chat.title or chat.username or chat.full_name or "(unnamed chat)"
+    try:
+        await context.bot.send_message(
+            chat_id=OWNER_TELEGRAM_ID,
+            text=(
+                f"🤖 Bot added to <b>{title}</b> (chat_id <code>{chat.id}</code>).\n"
+                f"To start broadcasting here: /grant {chat.id} {title}"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.warning("Failed to notify owner of new chat membership: %s", exc)
