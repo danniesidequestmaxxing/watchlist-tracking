@@ -229,6 +229,7 @@ SOURCE_TTL_HOURS: dict[str, int] = {
     "trading-economics": 30,
     "finnhub": 8,
     "sec-edgar": 30,
+    "bursa": 30,
     "catalyst-agent": 48,
 }
 
@@ -327,3 +328,33 @@ def format_edgar_alert(item: dict) -> str:
     filed = escape(str(item.get("filing_date", "?")))
     url = escape(str(item.get("source_url", "https://www.sec.gov")))
     return f'📄 <b>{ticker}</b> | New {form} filed {filed}\n<a href="{url}">View filing</a>'
+
+
+# Phase 10 — Bursa announcements
+
+
+def format_bursa_catalyst(ticker: str, items: list[dict], pulled_at_iso: str | None) -> str:
+    """Render Bursa announcements as a catalyst-style block.
+
+    Bursa announcements are mostly past-dated filings (the future-dated calendar
+    isn't free), so we render them as a flat list rather than the
+    confirmed/expected/speculative tiers used by `format_catalyst_output`.
+    """
+    if not items:
+        return f"🎯 <b>{escape(ticker)}</b> | no recent Bursa announcements"
+
+    lines: list[str] = [f"🎯 <b>{escape(ticker)}</b> | Bursa announcements (last 30d)"]
+    for entry in items[:15]:
+        date_str = escape(str(entry.get("filing_date", "?")))
+        desc = escape(str(entry.get("description") or "Bursa announcement"))[:200]
+        url = escape(str(entry.get("source_url") or "https://www.bursamalaysia.com"))
+        form = escape(str(entry.get("form") or "announcement"))
+        lines.append(f'• {date_str} [{form}]: <a href="{url}">{desc}</a>')
+
+    if pulled_at_iso:
+        try:
+            pulled = datetime.fromisoformat(pulled_at_iso)
+            lines.append(f"\nPulled: {_fmt_relative(pulled)} (bursamalaysia.com)")
+        except (TypeError, ValueError):
+            pass
+    return "\n".join(lines)

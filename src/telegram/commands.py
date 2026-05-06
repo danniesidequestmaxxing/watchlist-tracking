@@ -4,6 +4,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from src.adapters import bursa
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
 from src.db import catalysts, health
@@ -19,6 +20,7 @@ from src.db.watchlist import (
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
 from src.telegram.formatters import (
+    format_bursa_catalyst,
     format_catalyst_output,
     format_health,
     format_ta_snapshot,
@@ -132,8 +134,8 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 )
                 return
             snapshot = await get_crypto_snapshot(DB_PATH, ticker, entry.exchange)
-        elif entry.asset_class == "equity_us":
-            snapshot = await get_equity_snapshot(DB_PATH, ticker)
+        elif entry.asset_class in ("equity_us", "equity_my", "equity_sg"):
+            snapshot = await get_equity_snapshot(DB_PATH, ticker, entry.asset_class)
         else:
             await msg.reply_text(f"/snapshot for {entry.asset_class} is not implemented yet.")
             return
@@ -161,6 +163,23 @@ async def cmd_catalyst(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text(f"{ticker} is not on the watchlist. /add it first.")
         return
 
+    if entry.asset_class == "equity_my":
+        # Bursa isn't covered by the catalyst agent's prompt rules; fetch
+        # announcements directly and render them in the catalyst layout.
+        await msg.reply_text(f"Pulling Bursa announcements for {ticker}…")
+        try:
+            result = await bursa.fetch_announcements(DB_PATH, ticker, days_back=30)
+        except Exception as exc:
+            logger.exception("Bursa fetch failed for %s", ticker)
+            await msg.reply_text(f"Bursa lookup failed for {ticker}: {exc}")
+            return
+        await msg.reply_text(
+            format_bursa_catalyst(ticker, result.get("items", []), result.get("pulled_at")),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     await msg.reply_text(f"Pulling catalysts for {ticker}…")
     try:
         output = await run_catalyst_agent(ticker, entry.asset_class, DB_PATH)
@@ -186,8 +205,8 @@ async def _ta_for(entry: WatchlistEntry) -> str | None:
     try:
         if entry.asset_class == "crypto" and entry.exchange:
             snap = await get_crypto_snapshot(DB_PATH, entry.ticker, entry.exchange)
-        elif entry.asset_class == "equity_us":
-            snap = await get_equity_snapshot(DB_PATH, entry.ticker)
+        elif entry.asset_class in ("equity_us", "equity_my", "equity_sg"):
+            snap = await get_equity_snapshot(DB_PATH, entry.ticker, entry.asset_class)
         else:
             return None
     except Exception as exc:
@@ -197,6 +216,14 @@ async def _ta_for(entry: WatchlistEntry) -> str | None:
 
 
 async def _catalyst_for(entry: WatchlistEntry) -> str | None:
+    if entry.asset_class == "equity_my":
+        try:
+            result = await bursa.fetch_announcements(DB_PATH, entry.ticker, days_back=30)
+        except Exception as exc:
+            logger.warning("Digest Bursa fetch failed for %s: %s", entry.ticker, exc)
+            return None
+        return format_bursa_catalyst(entry.ticker, result.get("items", []), result.get("pulled_at"))
+
     try:
         out = await run_catalyst_agent(entry.ticker, entry.asset_class, DB_PATH)
     except Exception as exc:

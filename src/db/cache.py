@@ -25,6 +25,8 @@ TTL_SECONDS: dict[str, int] = {
     # always reads with an explicit long TTL; the entry is here so cache.write
     # accepts the data_type.
     "edgar_seen": 90 * 24 * 60 * 60,
+    # Phase 10 — Bursa announcements; 6h cache mirrors earnings_calendar cadence.
+    "bursa_announcements": 6 * 60 * 60,
 }
 
 # Tolerated clock skew when accepting a `pulled_at` from an external source.

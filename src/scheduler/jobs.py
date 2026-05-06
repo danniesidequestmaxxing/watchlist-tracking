@@ -24,7 +24,7 @@ from src.telegram.formatters import (
     format_edgar_alert,
     format_ta_snapshot,
 )
-from src.utils.timestamps import is_us_market_open, now_kl
+from src.utils.timestamps import is_my_market_open, is_us_market_open, now_kl
 
 if TYPE_CHECKING:
     from telegram.ext import Application
@@ -46,23 +46,25 @@ async def _send(app: "Application", text: str) -> None:
 
 async def _push_snapshot(app: "Application", entry: WatchlistEntry) -> None:
     """Fetch a fresh TA snapshot and DM it to the owner."""
+    is_equity = entry.asset_class in ("equity_us", "equity_my", "equity_sg")
+    source_label = "yfinance" if is_equity else f"ccxt:{entry.exchange}"
     try:
         if entry.asset_class == "crypto":
             assert entry.exchange is not None
             snap = await get_crypto_snapshot(
                 DB_PATH, entry.ticker, entry.exchange, force_refresh=True
             )
-            source_label = f"ccxt:{entry.exchange}"
-        elif entry.asset_class == "equity_us":
-            snap = await get_equity_snapshot(DB_PATH, entry.ticker, force_refresh=True)
-            source_label = "yfinance"
+        elif is_equity:
+            snap = await get_equity_snapshot(
+                DB_PATH, entry.ticker, entry.asset_class, force_refresh=True
+            )
         else:
             return
     except Exception as exc:
         logger.exception("TA refresh failed for %s", entry.ticker)
         await health.record(
             DB_PATH,
-            source="yfinance" if entry.asset_class == "equity_us" else f"ccxt:{entry.exchange}",
+            source=source_label,
             status="error",
             details=f"{entry.ticker}: {exc}",
         )
@@ -122,6 +124,21 @@ async def refresh_equity_us_ta(app: "Application") -> None:
     entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
     for entry in entries:
         if entry.asset_class != "equity_us":
+            continue
+        if not entry.ta_enabled or is_muted(entry):
+            continue
+        await _push_snapshot(app, entry)
+
+
+async def refresh_equity_my_ta(app: "Application") -> None:
+    """Hourly Bursa fetch, suppressed outside the 01:00-09:00 UTC window."""
+    if not is_my_market_open():
+        logger.info("ta_refresh_equity_my: Bursa closed, suppressing")
+        return
+    logger.info("ta_refresh_equity_my tick")
+    entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
+    for entry in entries:
+        if entry.asset_class != "equity_my":
             continue
         if not entry.ta_enabled or is_muted(entry):
             continue
@@ -320,6 +337,15 @@ def register_jobs(scheduler: AsyncIOScheduler, app: "Application") -> None:
         minute=10,
         jitter=60,
         id="ta_refresh_equity_us",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_equity_my_ta,
+        args=[app],
+        trigger="cron",
+        minute=15,
+        jitter=60,
+        id="ta_refresh_equity_my",
         replace_existing=True,
     )
     scheduler.add_job(

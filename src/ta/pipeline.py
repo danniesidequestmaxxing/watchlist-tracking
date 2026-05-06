@@ -288,19 +288,35 @@ async def get_crypto_snapshot(
     return await _finalize_snapshot(db_path, bundle, cache_key, f"ccxt:{exchange}")
 
 
+_YF_SUFFIX_BY_ASSET_CLASS: dict[str, str] = {
+    "equity_us": "",
+    "equity_my": ".KL",
+    "equity_sg": ".SI",
+}
+
+
 async def get_equity_snapshot(
     db_path: Path,
     ticker: str,
+    asset_class: str = "equity_us",
     *,
     force_refresh: bool = False,
 ) -> TASnapshot:
-    """Return a TASnapshot for a US equity ticker via yfinance."""
-    cache_key = _ta_cache_key(ticker, exchange=None)
+    """Return a TASnapshot for an equity ticker via yfinance.
+
+    For equity_my we suffix `.KL`; for equity_sg `.SI`. yfinance handles both
+    transparently — the canonical ticker is restored on the bundle so display
+    shows e.g. `5347` rather than `5347.KL`.
+    """
+    suffix = _YF_SUFFIX_BY_ASSET_CLASS.get(asset_class, "")
+    cache_key = _ta_cache_key(ticker, exchange=asset_class)
     if not force_refresh:
         hit = await _read_cache_or_none(db_path, cache_key)
         if hit is not None:
             return hit
 
+    yf_ticker = ticker if ticker.endswith(suffix) or not suffix else f"{ticker}{suffix}"
     adapter = EquityYFAdapter()
-    bundle = await adapter.fetch_ohlcv(ticker, timeframe="1h", limit=200)
+    bundle = await adapter.fetch_ohlcv(yf_ticker, timeframe="1h", limit=200)
+    bundle.ticker = ticker.upper()  # restore canonical display form
     return await _finalize_snapshot(db_path, bundle, cache_key, "yfinance")
