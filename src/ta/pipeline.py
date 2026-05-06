@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from src.adapters.base import OHLCVBundle
 from src.adapters.crypto_ccxt import CryptoCCXTAdapter
+from src.adapters.equity_yf import EquityYFAdapter
 from src.db import cache, health
 from src.ta.indicators import atr, bollinger_bands, ema, macd, returns_pct, rsi, sma
 from src.validation.checks import ValidationError, in_range
@@ -227,38 +228,22 @@ def validate_ta_snapshot(snap: TASnapshot) -> list[str]:
     return issues
 
 
-async def get_crypto_snapshot(
+async def _finalize_snapshot(
     db_path: Path,
-    ticker: str,
-    exchange: str,
-    *,
-    force_refresh: bool = False,
+    bundle: OHLCVBundle,
+    cache_key: str,
+    health_source: str,
 ) -> TASnapshot:
-    """Return a TASnapshot for a crypto ticker, using the cache when fresh.
+    """Compute, validate, cache, and return a snapshot.
 
-    Computed snapshots that fail `validate_ta_snapshot` are dropped (a
-    health_log row is written) rather than cached or returned to Telegram.
+    On validation failure: log to `health_log` and raise ValidationError.
     """
-    cache_key = _ta_cache_key(ticker, exchange)
-    if not force_refresh:
-        cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["ta_1h"])
-        if cached is not None:
-            logger.info("Cache hit: %s", cache_key)
-            return TASnapshot.model_validate(cached)
-
-    adapter = CryptoCCXTAdapter()
-    try:
-        bundle = await adapter.fetch_ohlcv(ticker, timeframe="1h", limit=200, exchange=exchange)
-    finally:
-        await adapter.close()
-
     snapshot = compute_snapshot(bundle)
-
     issues = validate_ta_snapshot(snapshot)
     if issues:
-        details = f"{ticker}@{exchange}: " + "; ".join(issues)
+        details = f"{bundle.ticker}: " + "; ".join(issues)
         logger.warning("Dropping invalid TA snapshot — %s", details)
-        await health.record(db_path, source=f"ccxt:{exchange}", status="error", details=details)
+        await health.record(db_path, source=health_source, status="error", details=details)
         raise ValidationError(details)
 
     await cache.write(
@@ -268,6 +253,54 @@ async def get_crypto_snapshot(
         payload=snapshot.model_dump(mode="json"),
         pulled_at=snapshot.pulled_at,
         source_url=snapshot.source_url,
-        ticker=ticker.upper(),
+        ticker=bundle.ticker,
     )
     return snapshot
+
+
+async def _read_cache_or_none(db_path: Path, cache_key: str) -> TASnapshot | None:
+    cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["ta_1h"])
+    if cached is None:
+        return None
+    logger.info("Cache hit: %s", cache_key)
+    return TASnapshot.model_validate(cached)
+
+
+async def get_crypto_snapshot(
+    db_path: Path,
+    ticker: str,
+    exchange: str,
+    *,
+    force_refresh: bool = False,
+) -> TASnapshot:
+    """Return a TASnapshot for a crypto ticker, using the cache when fresh."""
+    cache_key = _ta_cache_key(ticker, exchange)
+    if not force_refresh:
+        hit = await _read_cache_or_none(db_path, cache_key)
+        if hit is not None:
+            return hit
+
+    adapter = CryptoCCXTAdapter()
+    try:
+        bundle = await adapter.fetch_ohlcv(ticker, timeframe="1h", limit=200, exchange=exchange)
+    finally:
+        await adapter.close()
+    return await _finalize_snapshot(db_path, bundle, cache_key, f"ccxt:{exchange}")
+
+
+async def get_equity_snapshot(
+    db_path: Path,
+    ticker: str,
+    *,
+    force_refresh: bool = False,
+) -> TASnapshot:
+    """Return a TASnapshot for a US equity ticker via yfinance."""
+    cache_key = _ta_cache_key(ticker, exchange=None)
+    if not force_refresh:
+        hit = await _read_cache_or_none(db_path, cache_key)
+        if hit is not None:
+            return hit
+
+    adapter = EquityYFAdapter()
+    bundle = await adapter.fetch_ohlcv(ticker, timeframe="1h", limit=200)
+    return await _finalize_snapshot(db_path, bundle, cache_key, "yfinance")

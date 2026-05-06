@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
 from src.db.watchlist import add_entry, count_entries, find_entry, list_entries, remove_entry
-from src.ta.pipeline import get_crypto_snapshot
+from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
 from src.telegram.formatters import format_ta_snapshot, format_watchlist
 from src.utils.asset_class import detect_asset_class
@@ -106,22 +106,22 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text(f"{ticker} is not on the watchlist. /add it first.")
         return
 
-    if entry.asset_class != "crypto":
-        await msg.reply_text(
-            f"/snapshot for {entry.asset_class} is not implemented yet (Phase 4 will add equities)."
-        )
-        return
-
-    if not entry.exchange:
-        await msg.reply_text(
-            f"{ticker} has no exchange set. /remove it and re-add with `/add {ticker} <exchange>`."
-        )
-        return
-
     try:
-        snapshot = await get_crypto_snapshot(DB_PATH, ticker, entry.exchange)
+        if entry.asset_class == "crypto":
+            if not entry.exchange:
+                await msg.reply_text(
+                    f"{ticker} has no exchange set. /remove and re-add with "
+                    f"`/add {ticker} <exchange>`."
+                )
+                return
+            snapshot = await get_crypto_snapshot(DB_PATH, ticker, entry.exchange)
+        elif entry.asset_class == "equity_us":
+            snapshot = await get_equity_snapshot(DB_PATH, ticker)
+        else:
+            await msg.reply_text(f"/snapshot for {entry.asset_class} is not implemented yet.")
+            return
     except Exception as exc:
-        logger.exception("Snapshot fetch failed for %s on %s", ticker, entry.exchange)
+        logger.exception("Snapshot fetch failed for %s (%s)", ticker, entry.asset_class)
         await msg.reply_text(f"Failed to fetch snapshot for {ticker}: {exc}")
         return
 
