@@ -7,7 +7,15 @@ from telegram.ext import ContextTypes
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
 from src.db import catalysts
-from src.db.watchlist import add_entry, count_entries, find_entry, list_entries, remove_entry
+from src.db.watchlist import (
+    WatchlistEntry,
+    add_entry,
+    count_entries,
+    find_entry,
+    is_muted,
+    list_entries,
+    remove_entry,
+)
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
 from src.telegram.formatters import format_catalyst_output, format_ta_snapshot, format_watchlist
@@ -21,7 +29,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
         return
-    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot /catalyst.")
+    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot /catalyst /digest.")
 
 
 @require_owner
@@ -164,3 +172,60 @@ async def cmd_catalyst(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.exception("Failed to persist catalyst events for %s", ticker)
 
     await msg.reply_text(format_catalyst_output(output), parse_mode=ParseMode.HTML)
+
+
+async def _ta_for(entry: WatchlistEntry) -> str | None:
+    """Return formatted TA for one entry, or None if unsupported / failed."""
+    try:
+        if entry.asset_class == "crypto" and entry.exchange:
+            snap = await get_crypto_snapshot(DB_PATH, entry.ticker, entry.exchange)
+        elif entry.asset_class == "equity_us":
+            snap = await get_equity_snapshot(DB_PATH, entry.ticker)
+        else:
+            return None
+    except Exception as exc:
+        logger.warning("Digest TA fetch failed for %s: %s", entry.ticker, exc)
+        return None
+    return format_ta_snapshot(snap)
+
+
+async def _catalyst_for(entry: WatchlistEntry) -> str | None:
+    try:
+        out = await run_catalyst_agent(entry.ticker, entry.asset_class, DB_PATH)
+    except Exception as exc:
+        logger.warning("Digest catalyst fetch failed for %s: %s", entry.ticker, exc)
+        return None
+    try:
+        await catalysts.save_events(
+            DB_PATH, entry.ticker, out.confirmed, out.expected, out.speculative
+        )
+    except Exception:
+        logger.exception("Failed to persist catalyst events for %s", entry.ticker)
+    return format_catalyst_output(out)
+
+
+@require_owner
+async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Full TA + catalyst pull for the entire watchlist (spec §5.1)."""
+    msg = update.effective_message
+    if msg is None:
+        return
+
+    entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
+    active = [e for e in entries if not is_muted(e)]
+    if not entries:
+        await msg.reply_text("Watchlist empty. Add entries with /add first.")
+        return
+
+    skipped = len(entries) - len(active)
+    note = f" ({skipped} muted)" if skipped else ""
+    await msg.reply_text(f"📊 Pulling digest for {len(active)} entries{note}…")
+
+    for entry in active:
+        ta = await _ta_for(entry)
+        if ta:
+            await msg.reply_text(ta, parse_mode=ParseMode.HTML)
+        if entry.catalyst_enabled:
+            catalyst = await _catalyst_for(entry)
+            if catalyst:
+                await msg.reply_text(catalyst, parse_mode=ParseMode.HTML)

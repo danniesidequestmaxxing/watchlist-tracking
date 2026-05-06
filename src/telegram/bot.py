@@ -9,6 +9,7 @@ from src.scheduler.jobs import register_jobs
 from src.telegram.commands import (
     cmd_add,
     cmd_catalyst,
+    cmd_digest,
     cmd_list,
     cmd_remove,
     cmd_snapshot,
@@ -53,4 +54,5 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("snapshot", cmd_snapshot))
     app.add_handler(CommandHandler("catalyst", cmd_catalyst))
+    app.add_handler(CommandHandler("digest", cmd_digest))
     return app

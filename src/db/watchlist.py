@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 import aiosqlite
@@ -19,6 +20,20 @@ class WatchlistEntry(BaseModel):
     catalyst_enabled: bool = True
     alert_thresholds: str | None = None
     muted_until: str | None = None
+
+
+def is_muted(entry: WatchlistEntry) -> bool:
+    """Return True if `entry.muted_until` parses to a future timestamp."""
+    if not entry.muted_until:
+        return False
+    try:
+        until = datetime.fromisoformat(entry.muted_until)
+    except (TypeError, ValueError):
+        logger.warning("Invalid muted_until on %s: %r", entry.ticker, entry.muted_until)
+        return False
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    return until > datetime.now(UTC)
 
 
 async def add_entry(
