@@ -217,3 +217,68 @@ def format_catalyst_output(out: CatalystOutput, *, window_days: int = 14) -> str
         lines.extend(f"• {escape(f)}" for f in out.flags)
 
     return "\n".join(lines)
+
+
+# Phase 8 — /health
+SOURCE_TTL_HOURS: dict[str, int] = {
+    "ccxt:binance": 2,
+    "ccxt:okx": 2,
+    "ccxt:hyperliquid": 2,
+    "yfinance": 4,
+    "token-unlocks": 30,
+    "trading-economics": 30,
+    "finnhub": 8,
+    "sec-edgar": 30,
+    "catalyst-agent": 48,
+}
+
+
+def _fmt_age(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def _row_for(source: str, info: dict | None, ttl_hours: int) -> str:
+    label = source.ljust(22)
+    if info is None:
+        return f"<code>{escape(label)}</code> ❌ no data"
+    age_seconds = (datetime.now(UTC) - info["recorded_at"]).total_seconds()
+    age_str = _fmt_age(age_seconds)
+    status = info["status"]
+    details = (info.get("details") or "").strip()
+    if status == "error":
+        suffix = f" (last error: {escape(details[:80])})" if details else ""
+        return f"<code>{escape(label)}</code> ❌ {age_str}{suffix}"
+    if status == "rate_limited":
+        return f"<code>{escape(label)}</code> ⚠ {age_str} (rate limited)"
+    if age_seconds > ttl_hours * 3600:
+        return f"<code>{escape(label)}</code> ⚠ {age_str} (TTL {ttl_hours}h, stale)"
+    return f"<code>{escape(label)}</code> ✅ {age_str}"
+
+
+def format_health(per_source: dict[str, dict]) -> str:
+    """Render the spec §5.6 /health block.
+
+    Sources known to the bot are listed in their canonical order; any other
+    sources present in the table get appended at the bottom under a 24h TTL.
+    """
+    lines = ["🩺 <b>Source health</b>", ""]
+    seen: set[str] = set()
+
+    for source, ttl in SOURCE_TTL_HOURS.items():
+        seen.add(source)
+        lines.append(_row_for(source, per_source.get(source), ttl))
+
+    extras = sorted(s for s in per_source if s not in seen)
+    if extras:
+        lines.append("")
+        for source in extras:
+            lines.append(_row_for(source, per_source[source], ttl_hours=24))
+
+    return "\n".join(lines)

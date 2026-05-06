@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
-from src.db import catalysts
+from src.db import catalysts, health
 from src.db.watchlist import (
     WatchlistEntry,
     add_entry,
@@ -18,7 +18,12 @@ from src.db.watchlist import (
 )
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
-from src.telegram.formatters import format_catalyst_output, format_ta_snapshot, format_watchlist
+from src.telegram.formatters import (
+    format_catalyst_output,
+    format_health,
+    format_ta_snapshot,
+    format_watchlist,
+)
 from src.utils.asset_class import detect_asset_class
 
 logger = logging.getLogger(__name__)
@@ -29,7 +34,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
         return
-    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot /catalyst /digest.")
+    await msg.reply_text(
+        "Bot online. Commands: /add /remove /list /snapshot /catalyst /digest /health."
+    )
 
 
 @require_owner
@@ -229,3 +236,13 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             catalyst = await _catalyst_for(entry)
             if catalyst:
                 await msg.reply_text(catalyst, parse_mode=ParseMode.HTML)
+
+
+@require_owner
+async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Per-source freshness from health_log (spec §5.6)."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    rows = await health.latest_per_source(DB_PATH)
+    await msg.reply_text(format_health(rows), parse_mode=ParseMode.HTML)

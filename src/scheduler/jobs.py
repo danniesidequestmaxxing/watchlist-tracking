@@ -1,12 +1,12 @@
 """Scheduled jobs per spec §5.7.
 
 Phase 4 wired ta_refresh_crypto + ta_refresh_equity_us. Phase 7 adds the
-catalyst refresh trio and the 07:00 KL daily_digest. The Bursa equity_my
-refresh is gated on Phase 10 (no adapter yet); the health heartbeat is
-gated on Phase 8.
+catalyst refresh trio and the 07:00 KL daily_digest. Phase 8 adds the
+6-hourly health_heartbeat. The Bursa equity_my refresh waits on Phase 10.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -18,7 +18,7 @@ from src.config import DB_PATH, KL_TZ, OWNER_TELEGRAM_ID
 from src.db import catalysts, health
 from src.db.watchlist import WatchlistEntry, is_muted, list_entries
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
-from src.telegram.formatters import format_catalyst_output, format_ta_snapshot
+from src.telegram.formatters import SOURCE_TTL_HOURS, format_catalyst_output, format_ta_snapshot
 from src.utils.timestamps import is_us_market_open, now_kl
 
 if TYPE_CHECKING:
@@ -178,6 +178,40 @@ async def catalyst_refresh_macro(app: "Application") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Phase 8 — health heartbeat
+# ---------------------------------------------------------------------------
+
+# A source that hasn't logged anything within this window is considered silent
+# and the heartbeat writes an "error" row so /health surfaces a ❌.
+SILENCE_THRESHOLD_HOURS = 24
+
+
+async def health_heartbeat(app: "Application") -> None:
+    """Every 6h — flag any tracked source that hasn't checked in for >24h.
+
+    Skips sources with a recent ok/error row; only writes when a source has
+    been silent past the threshold or has never been seen at all.
+    """
+    logger.info("health_heartbeat tick")
+    rows = await health.latest_per_source(DB_PATH)
+    now = datetime.now(UTC)
+    threshold_seconds = SILENCE_THRESHOLD_HOURS * 3600
+    for source in SOURCE_TTL_HOURS:
+        info = rows.get(source)
+        if info is None:
+            await health.record(DB_PATH, source=source, status="error", details="never seen")
+            continue
+        age = (now - info["recorded_at"]).total_seconds()
+        if age > threshold_seconds:
+            await health.record(
+                DB_PATH,
+                source=source,
+                status="error",
+                details=f"silent for {age / 3600:.1f}h",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -249,6 +283,17 @@ def register_jobs(scheduler: AsyncIOScheduler, app: "Application") -> None:
         timezone=KL_TZ,
         jitter=60,
         id="daily_digest",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        health_heartbeat,
+        args=[app],
+        trigger="cron",
+        hour="0,6,12,18",
+        minute=30,
+        timezone=KL_TZ,
+        jitter=60,
+        id="health_heartbeat",
         replace_existing=True,
     )
     logger.info("Scheduler jobs registered: %s", [j.id for j in scheduler.get_jobs()])
