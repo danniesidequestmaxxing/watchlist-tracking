@@ -4,11 +4,13 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
+from src.db import catalysts
 from src.db.watchlist import add_entry, count_entries, find_entry, list_entries, remove_entry
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
-from src.telegram.formatters import format_ta_snapshot, format_watchlist
+from src.telegram.formatters import format_catalyst_output, format_ta_snapshot, format_watchlist
 from src.utils.asset_class import detect_asset_class
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
         return
-    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot.")
+    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot /catalyst.")
 
 
 @require_owner
@@ -126,3 +128,39 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     await msg.reply_text(format_ta_snapshot(snapshot), parse_mode=ParseMode.HTML)
+
+
+@require_owner
+async def cmd_catalyst(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text("Usage: /catalyst <ticker>")
+        return
+
+    ticker = args[0].upper().strip()
+    entry = await find_entry(DB_PATH, OWNER_TELEGRAM_ID, ticker)
+    if entry is None:
+        await msg.reply_text(f"{ticker} is not on the watchlist. /add it first.")
+        return
+
+    await msg.reply_text(f"Pulling catalysts for {ticker}…")
+    try:
+        output = await run_catalyst_agent(ticker, entry.asset_class, DB_PATH)
+    except Exception as exc:
+        logger.exception("Catalyst agent failed for %s", ticker)
+        await msg.reply_text(f"Catalyst lookup failed for {ticker}: {exc}")
+        return
+
+    try:
+        saved = await catalysts.save_events(
+            DB_PATH, ticker, output.confirmed, output.expected, output.speculative
+        )
+        if saved:
+            logger.info("Saved %d catalyst events for %s", saved, ticker)
+    except Exception:
+        logger.exception("Failed to persist catalyst events for %s", ticker)
+
+    await msg.reply_text(format_catalyst_output(output), parse_mode=ParseMode.HTML)

@@ -1,7 +1,9 @@
 import logging
 from datetime import UTC, datetime
 from html import escape
+from urllib.parse import urlparse
 
+from src.catalyst.agent import CatalystEvent, CatalystOutput, NewsTheme
 from src.db.watchlist import WatchlistEntry
 from src.ta.pipeline import TASnapshot, validate_ta_snapshot
 
@@ -153,4 +155,65 @@ def format_ta_snapshot(snap: TASnapshot) -> str:
         f"7d H/L: {_fmt_price(snap.high_7d)} / {_fmt_price(snap.low_7d)}",
         f"Pulled: {_fmt_relative(snap.pulled_at)} ({exchange})",
     ]
+    return "\n".join(lines)
+
+
+_MONTH_DAY = "%b %-d"
+
+
+def _fmt_event_date(d) -> str:
+    return d.strftime(_MONTH_DAY)
+
+
+def _domain(url) -> str:
+    try:
+        host = urlparse(str(url)).netloc
+    except Exception:
+        return str(url)
+    return host.removeprefix("www.")
+
+
+def _fmt_event_line(event: CatalystEvent) -> str:
+    desc = escape(event.description or event.event_type)
+    return (
+        f"• {_fmt_event_date(event.event_date)}: {desc}\n"
+        f"   src: {escape(_domain(event.source_url))} "
+        f"(pulled {_fmt_relative(event.source_pulled_at)})"
+    )
+
+
+def _fmt_news_line(item: NewsTheme) -> str:
+    summary = escape(item.summary)
+    stale = " (stale)" if item.stale else ""
+    return (
+        f"• {summary}{stale}\n"
+        f"   src: {escape(_domain(item.source_url))} ({_fmt_event_date(item.date)})"
+    )
+
+
+def format_catalyst_output(out: CatalystOutput, *, window_days: int = 14) -> str:
+    ticker = escape(out.ticker)
+    if out.no_known_catalysts and not (out.confirmed or out.expected or out.speculative):
+        flags = "\n".join(f"• {escape(f)}" for f in out.flags) if out.flags else ""
+        flag_block = f"\n\n⚠ Flags\n{flags}" if flags else ""
+        return f"🎯 <b>{ticker}</b> | no known catalysts{flag_block}"
+
+    lines: list[str] = [f"🎯 <b>{ticker}</b> | Catalysts (next {window_days}d)"]
+
+    if out.confirmed:
+        lines.append("\n<b>CONFIRMED</b>")
+        lines.extend(_fmt_event_line(e) for e in out.confirmed)
+    if out.expected:
+        lines.append("\n<b>EXPECTED</b>")
+        lines.extend(_fmt_event_line(e) for e in out.expected)
+    if out.speculative:
+        lines.append("\n<b>SPECULATIVE</b>")
+        lines.extend(_fmt_event_line(e) for e in out.speculative)
+    if out.news_themes:
+        lines.append("\n<b>NEWS THEMES (7d)</b>")
+        lines.extend(_fmt_news_line(n) for n in out.news_themes)
+    if out.flags:
+        lines.append("\n⚠ <b>Flags</b>")
+        lines.extend(f"• {escape(f)}" for f in out.flags)
+
     return "\n".join(lines)
