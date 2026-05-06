@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -11,11 +12,13 @@ from src.db import catalysts, forwards, health
 from src.db.watchlist import (
     WatchlistEntry,
     add_entry,
+    clear_mute,
     count_entries,
     find_entry,
     is_muted,
     list_entries,
     remove_entry,
+    set_mute,
 )
 from src.ta.pipeline import get_crypto_snapshot, get_equity_snapshot
 from src.telegram.auth import require_owner
@@ -27,6 +30,7 @@ from src.telegram.formatters import (
     format_watchlist,
 )
 from src.utils.asset_class import detect_asset_class
+from src.utils.timestamps import fmt_duration, parse_duration
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +41,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if msg is None:
         return
     await msg.reply_text(
-        "Bot online. Commands: /add /addmany /remove /list /snapshot /catalyst "
-        "/digest /health /grant /revoke /forwards."
+        "Bot online. Commands: /add /addmany /remove /list /mute /unmute "
+        "/snapshot /catalyst /digest /health /grant /revoke /forwards."
     )
 
 
@@ -453,3 +457,62 @@ async def cmd_on_new_chat_members(update: Update, context: ContextTypes.DEFAULT_
         )
     except Exception as exc:
         logger.warning("Failed to notify owner of new chat membership: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# /mute and /unmute (spec §5.1)
+# ---------------------------------------------------------------------------
+
+
+@require_owner
+async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/mute <ticker> <duration>` — silence pushes for a period.
+
+    Duration uses Nm/Nh/Nd, e.g. `/mute BTCUSDT 24h`. The scheduler, EDGAR
+    poller, and /digest all honor `muted_until`.
+    """
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await msg.reply_text("Usage: /mute <ticker> <duration>\n  e.g. /mute BTCUSDT 24h")
+        return
+
+    ticker = args[0].upper().strip()
+    duration_str = args[1].strip()
+
+    delta = parse_duration(duration_str)
+    if delta is None:
+        await msg.reply_text(f"Bad duration: {duration_str!r}. Use Nm/Nh/Nd (e.g. 30m, 24h, 7d).")
+        return
+
+    until = datetime.now(UTC) + delta
+    rows = await set_mute(DB_PATH, OWNER_TELEGRAM_ID, ticker, until)
+    if rows == 0:
+        await msg.reply_text(f"{ticker} is not on the watchlist. /add it first.")
+        return
+    await msg.reply_text(
+        f"🔴 Muted <b>{ticker}</b> for {fmt_duration(delta)} "
+        f"(until {until.strftime('%a %b %d %H:%M UTC')}).",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@require_owner
+async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """`/unmute <ticker>` — clear an active mute."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text("Usage: /unmute <ticker>")
+        return
+
+    ticker = args[0].upper().strip()
+    rows = await clear_mute(DB_PATH, OWNER_TELEGRAM_ID, ticker)
+    if rows == 0:
+        await msg.reply_text(f"{ticker} is not on the watchlist.")
+    else:
+        await msg.reply_text(f"🟢 Unmuted <b>{ticker}</b>.", parse_mode=ParseMode.HTML)

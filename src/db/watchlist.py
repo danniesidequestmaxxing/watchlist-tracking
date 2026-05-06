@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
@@ -22,18 +22,62 @@ class WatchlistEntry(BaseModel):
     muted_until: str | None = None
 
 
-def is_muted(entry: WatchlistEntry) -> bool:
-    """Return True if `entry.muted_until` parses to a future timestamp."""
+def _parse_muted_until(entry: WatchlistEntry) -> datetime | None:
     if not entry.muted_until:
-        return False
+        return None
     try:
         until = datetime.fromisoformat(entry.muted_until)
     except (TypeError, ValueError):
         logger.warning("Invalid muted_until on %s: %r", entry.ticker, entry.muted_until)
-        return False
+        return None
     if until.tzinfo is None:
         until = until.replace(tzinfo=UTC)
-    return until > datetime.now(UTC)
+    return until
+
+
+def is_muted(entry: WatchlistEntry) -> bool:
+    """Return True if `entry.muted_until` parses to a future timestamp."""
+    until = _parse_muted_until(entry)
+    return until is not None and until > datetime.now(UTC)
+
+
+def mute_remaining(entry: WatchlistEntry) -> timedelta | None:
+    """Return how long the mute has left, or None if not muted."""
+    until = _parse_muted_until(entry)
+    if until is None:
+        return None
+    remaining = until - datetime.now(UTC)
+    return remaining if remaining.total_seconds() > 0 else None
+
+
+async def set_mute(
+    db_path: Path,
+    user_id: int,
+    ticker: str,
+    until: datetime,
+) -> int:
+    """Set muted_until for `ticker`. Returns rows affected (0 if not on watchlist)."""
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=UTC)
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "UPDATE watchlist SET muted_until = ? WHERE user_id = ? AND UPPER(ticker) = UPPER(?)",
+            (until.isoformat(), user_id, ticker),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def clear_mute(db_path: Path, user_id: int, ticker: str) -> int:
+    """Clear muted_until for `ticker`. Returns rows affected (0 if not on watchlist)."""
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            "UPDATE watchlist SET muted_until = NULL "
+            "WHERE user_id = ? AND UPPER(ticker) = UPPER(?)",
+            (user_id, ticker),
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 async def add_entry(

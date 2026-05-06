@@ -16,11 +16,13 @@ from src.telegram.commands import (
     cmd_grant,
     cmd_health,
     cmd_list,
+    cmd_mute,
     cmd_on_new_chat_members,
     cmd_remove,
     cmd_revoke,
     cmd_snapshot,
     cmd_start,
+    cmd_unmute,
 )
 from src.webhooks import server as webhook_server
 
@@ -81,6 +83,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("addmany", cmd_addmany))
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("mute", cmd_mute))
+    app.add_handler(CommandHandler("unmute", cmd_unmute))
     app.add_handler(CommandHandler("snapshot", cmd_snapshot))
     app.add_handler(CommandHandler("catalyst", cmd_catalyst))
     app.add_handler(CommandHandler("digest", cmd_digest))

@@ -6,7 +6,8 @@ and rely on the upstream data adapter to return an empty payload, which the
 TA pipeline then drops via `validate_ta_snapshot`.
 """
 
-from datetime import UTC, datetime, time
+import re
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 ET = ZoneInfo("America/New_York")
@@ -52,3 +53,36 @@ def is_my_market_open(now: datetime | None = None) -> bool:
         return False
     t = utc.time()
     return time(1, 0) <= t < time(9, 0)
+
+
+_DURATION_RE = re.compile(r"^(\d+)\s*([mhd])$", re.IGNORECASE)
+_UNIT_TO_KW = {"m": "minutes", "h": "hours", "d": "days"}
+
+
+def parse_duration(raw: str) -> timedelta | None:
+    """Parse `30m`, `24h`, `7d` (case-insensitive) into a timedelta.
+
+    Returns None for any other shape so callers can surface a usage error.
+    """
+    if not raw:
+        return None
+    m = _DURATION_RE.match(raw.strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    if n <= 0:
+        return None
+    unit = m.group(2).lower()
+    return timedelta(**{_UNIT_TO_KW[unit]: n})
+
+
+def fmt_duration(delta: timedelta) -> str:
+    """Render a timedelta as `Nm` / `Nh` / `Nd` (smallest unit that fits)."""
+    secs = max(0, int(delta.total_seconds()))
+    if secs < 60:
+        return f"{secs}s"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    return f"{secs // 86400}d"

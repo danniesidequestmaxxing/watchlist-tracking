@@ -4,8 +4,9 @@ from html import escape
 from urllib.parse import urlparse
 
 from src.catalyst.agent import CatalystEvent, CatalystOutput, NewsTheme
-from src.db.watchlist import WatchlistEntry, is_muted
+from src.db.watchlist import WatchlistEntry, is_muted, mute_remaining
 from src.ta.pipeline import TASnapshot, validate_ta_snapshot
+from src.utils.timestamps import fmt_duration
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,10 @@ def format_watchlist(entries: list[WatchlistEntry]) -> str:
         marker = "🔴" if muted else "🟢"
         ticker = escape(entry.ticker)
         exch = f" ({escape(entry.exchange)})" if entry.exchange else ""
-        suffix = "  muted" if muted else ""
+        suffix = ""
+        if muted:
+            remaining = mute_remaining(entry)
+            suffix = f"  muted {fmt_duration(remaining)}" if remaining else "  muted"
         lines.append(f"{marker} <b>{ticker}</b>{exch} — {entry.asset_class}{suffix}")
     return "\n".join(lines)
 
