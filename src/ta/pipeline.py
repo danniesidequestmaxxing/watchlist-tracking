@@ -7,8 +7,9 @@ from pydantic import BaseModel
 
 from src.adapters.base import OHLCVBundle
 from src.adapters.crypto_ccxt import CryptoCCXTAdapter
-from src.db import cache
+from src.db import cache, health
 from src.ta.indicators import atr, bollinger_bands, ema, macd, returns_pct, rsi, sma
+from src.validation.checks import ValidationError, in_range
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +207,26 @@ def _ta_cache_key(ticker: str, exchange: str | None) -> str:
     return f"ta_1h:{ticker.upper()}:{(exchange or '-').lower()}"
 
 
+def validate_ta_snapshot(snap: TASnapshot) -> list[str]:
+    """Return a list of human-readable issues. Empty list means clean."""
+    issues: list[str] = []
+    if not in_range(snap.price, 0, 1e15) or snap.price <= 0:
+        issues.append(f"price not in (0, 1e15]: {snap.price}")
+    if snap.volume < 0:
+        issues.append(f"volume negative: {snap.volume}")
+    if snap.rsi_14 is not None and not in_range(snap.rsi_14, 0, 100):
+        issues.append(f"RSI out of [0,100]: {snap.rsi_14}")
+    if snap.atr_14 is not None and snap.atr_14 < 0:
+        issues.append(f"ATR negative: {snap.atr_14}")
+    if snap.bb_upper is not None and snap.bb_lower is not None and snap.bb_upper < snap.bb_lower:
+        issues.append(f"bb_upper < bb_lower: {snap.bb_upper} < {snap.bb_lower}")
+    if snap.high_24h < snap.low_24h:
+        issues.append(f"high_24h < low_24h: {snap.high_24h} < {snap.low_24h}")
+    if snap.high_7d < snap.low_7d:
+        issues.append(f"high_7d < low_7d: {snap.high_7d} < {snap.low_7d}")
+    return issues
+
+
 async def get_crypto_snapshot(
     db_path: Path,
     ticker: str,
@@ -213,7 +234,11 @@ async def get_crypto_snapshot(
     *,
     force_refresh: bool = False,
 ) -> TASnapshot:
-    """Return a TASnapshot for a crypto ticker, using the cache when fresh."""
+    """Return a TASnapshot for a crypto ticker, using the cache when fresh.
+
+    Computed snapshots that fail `validate_ta_snapshot` are dropped (a
+    health_log row is written) rather than cached or returned to Telegram.
+    """
     cache_key = _ta_cache_key(ticker, exchange)
     if not force_refresh:
         cached = await cache.read_if_fresh(db_path, cache_key, cache.TTL_SECONDS["ta_1h"])
@@ -228,6 +253,14 @@ async def get_crypto_snapshot(
         await adapter.close()
 
     snapshot = compute_snapshot(bundle)
+
+    issues = validate_ta_snapshot(snapshot)
+    if issues:
+        details = f"{ticker}@{exchange}: " + "; ".join(issues)
+        logger.warning("Dropping invalid TA snapshot — %s", details)
+        await health.record(db_path, source=f"ccxt:{exchange}", status="error", details=details)
+        raise ValidationError(details)
+
     await cache.write(
         db_path,
         cache_key=cache_key,

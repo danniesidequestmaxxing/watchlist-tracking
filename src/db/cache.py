@@ -1,10 +1,12 @@
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
+
+from src.validation.checks import ValidationError, is_fresh
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +23,8 @@ TTL_SECONDS: dict[str, int] = {
     "options_expiry": 60 * 60,
 }
 
-
-def is_fresh(pulled_at: datetime, ttl_seconds: int) -> bool:
-    """Return True if `pulled_at` is no older than `ttl_seconds` from now (UTC)."""
-    if pulled_at.tzinfo is None:
-        pulled_at = pulled_at.replace(tzinfo=UTC)
-    now = datetime.now(UTC)
-    return (now - pulled_at).total_seconds() <= ttl_seconds
+# Tolerated clock skew when accepting a `pulled_at` from an external source.
+WRITE_FUTURE_SKEW = timedelta(seconds=60)
 
 
 def _parse_ts(raw: str) -> datetime:
@@ -47,7 +44,23 @@ async def write(
     ticker: str | None = None,
     source_published_at: datetime | None = None,
 ) -> None:
-    """Insert or replace a cache entry."""
+    """Insert or replace a cache entry.
+
+    Rejects writes whose `pulled_at` is in the future beyond a 60-second clock
+    skew, or whose payload is empty. Rejects unknown `data_type` values to
+    avoid orphan rows that downstream readers can't TTL.
+    """
+    if not payload:
+        raise ValidationError(f"refusing to cache empty payload for {cache_key}")
+    if data_type not in TTL_SECONDS:
+        raise ValidationError(f"unknown data_type {data_type!r} for {cache_key}")
+    if pulled_at.tzinfo is None:
+        pulled_at = pulled_at.replace(tzinfo=UTC)
+    if pulled_at - datetime.now(UTC) > WRITE_FUTURE_SKEW:
+        raise ValidationError(
+            f"refusing to cache {cache_key}: pulled_at {pulled_at.isoformat()} is in the future"
+        )
+
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
             """

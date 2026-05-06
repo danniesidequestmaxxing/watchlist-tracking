@@ -1,8 +1,11 @@
+import logging
 from datetime import UTC, datetime
 from html import escape
 
 from src.db.watchlist import WatchlistEntry
-from src.ta.pipeline import TASnapshot
+from src.ta.pipeline import TASnapshot, validate_ta_snapshot
+
+logger = logging.getLogger(__name__)
 
 
 def format_watchlist(entries: list[WatchlistEntry]) -> str:
@@ -116,6 +119,14 @@ def _bb_atr_label(snap: TASnapshot) -> str:
 
 
 def format_ta_snapshot(snap: TASnapshot) -> str:
+    issues = validate_ta_snapshot(snap)
+    if issues:
+        logger.warning("Refusing to format invalid TA snapshot: %s", issues)
+        return (
+            f"📊 <b>{escape(snap.ticker)}</b> | data unavailable "
+            f"(failed validation: {escape(issues[0])})"
+        )
+
     ticker = escape(snap.ticker)
     timeframe = escape(snap.timeframe)
     exchange = escape(snap.exchange or "n/a")
