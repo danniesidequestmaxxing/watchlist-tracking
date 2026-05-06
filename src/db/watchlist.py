@@ -74,6 +74,31 @@ async def list_entries(db_path: Path, user_id: int) -> list[WatchlistEntry]:
         return [WatchlistEntry.model_validate(dict(row)) for row in rows]
 
 
+async def find_entry(
+    db_path: Path,
+    user_id: int,
+    ticker: str,
+) -> WatchlistEntry | None:
+    """Return the first entry matching (user_id, ticker) case-insensitively."""
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, user_id, ticker, asset_class, exchange, notes, added_at,
+                   ta_enabled, catalyst_enabled, alert_thresholds, muted_until
+            FROM watchlist
+            WHERE user_id = ? AND UPPER(ticker) = UPPER(?)
+            ORDER BY added_at ASC
+            LIMIT 1
+            """,
+            (user_id, ticker),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return WatchlistEntry.model_validate(dict(row))
+
+
 async def count_entries(db_path: Path, user_id: int) -> int:
     async with aiosqlite.connect(db_path) as db:
         cursor = await db.execute(

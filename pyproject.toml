@@ -8,7 +8,6 @@ dependencies = [
     "APScheduler>=3.10",
     "aiosqlite>=0.20",
     "pandas>=2.2",
-    "pandas-ta>=0.3.14b0",
     "ccxt>=4.4",
     "yfinance>=0.2.40",
     "anthropic>=0.40",

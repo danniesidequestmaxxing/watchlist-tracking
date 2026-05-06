@@ -5,9 +5,10 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
-from src.db.watchlist import add_entry, count_entries, list_entries, remove_entry
+from src.db.watchlist import add_entry, count_entries, find_entry, list_entries, remove_entry
+from src.ta.pipeline import get_crypto_snapshot
 from src.telegram.auth import require_owner
-from src.telegram.formatters import format_watchlist
+from src.telegram.formatters import format_ta_snapshot, format_watchlist
 from src.utils.asset_class import detect_asset_class
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
         return
-    await msg.reply_text("Bot online. Phase 1 commands: /add /remove /list.")
+    await msg.reply_text("Bot online. Commands: /add /remove /list /snapshot.")
 
 
 @require_owner
@@ -87,3 +88,41 @@ async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
     text = format_watchlist(entries)
     await msg.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+@require_owner
+async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text("Usage: /snapshot <ticker>")
+        return
+
+    ticker = args[0].upper().strip()
+    entry = await find_entry(DB_PATH, OWNER_TELEGRAM_ID, ticker)
+    if entry is None:
+        await msg.reply_text(f"{ticker} is not on the watchlist. /add it first.")
+        return
+
+    if entry.asset_class != "crypto":
+        await msg.reply_text(
+            f"/snapshot for {entry.asset_class} is not implemented yet (Phase 4 will add equities)."
+        )
+        return
+
+    if not entry.exchange:
+        await msg.reply_text(
+            f"{ticker} has no exchange set. /remove it and re-add with `/add {ticker} <exchange>`."
+        )
+        return
+
+    try:
+        snapshot = await get_crypto_snapshot(DB_PATH, ticker, entry.exchange)
+    except Exception as exc:
+        logger.exception("Snapshot fetch failed for %s on %s", ticker, entry.exchange)
+        await msg.reply_text(f"Failed to fetch snapshot for {ticker}: {exc}")
+        return
+
+    await msg.reply_text(format_ta_snapshot(snapshot), parse_mode=ParseMode.HTML)

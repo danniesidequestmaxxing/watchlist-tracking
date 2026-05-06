@@ -4,7 +4,7 @@ from telegram.ext import Application, CommandHandler
 
 from src.config import DB_PATH, TELEGRAM_BOT_TOKEN
 from src.db.schema import init_db
-from src.telegram.commands import cmd_add, cmd_list, cmd_remove, cmd_start
+from src.telegram.commands import cmd_add, cmd_list, cmd_remove, cmd_snapshot, cmd_start
 
 logger = logging.getLogger(__name__)
 
@@ -20,4 +20,5 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("list", cmd_list))
+    app.add_handler(CommandHandler("snapshot", cmd_snapshot))
     return app
