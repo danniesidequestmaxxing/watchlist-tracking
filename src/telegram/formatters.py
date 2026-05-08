@@ -235,6 +235,10 @@ SOURCE_TTL_HOURS: dict[str, int] = {
     "finnhub": 8,
     "sec-edgar": 30,
     "bursa": 30,
+    "dart": 30,
+    "edinet": 30,
+    "mops": 30,
+    "cninfo": 30,
     "catalyst-agent": 48,
 }
 
@@ -360,6 +364,45 @@ def format_bursa_catalyst(ticker: str, items: list[dict], pulled_at_iso: str | N
         try:
             pulled = datetime.fromisoformat(pulled_at_iso)
             lines.append(f"\nPulled: {_fmt_relative(pulled)} (bursamalaysia.com)")
+        except (TypeError, ValueError):
+            pass
+    return "\n".join(lines)
+
+
+# Phase 13 — generic disclosure block for Asia equity markets
+
+
+def format_disclosure_catalyst(
+    ticker: str,
+    items: list[dict],
+    pulled_at_iso: str | None,
+    *,
+    source_label: str,
+    source_domain: str,
+    window_days: int = 30,
+) -> str:
+    """Render a list of regulatory disclosures (KR/JP/TW/CN/MY) as catalyst output.
+
+    Generic version of `format_bursa_catalyst` — the four Asia adapters return
+    the same shape so they share this renderer.
+    """
+    if not items:
+        return f"🎯 <b>{escape(ticker)}</b> | no recent {escape(source_label)} disclosures"
+
+    lines = [
+        f"🎯 <b>{escape(ticker)}</b> | {escape(source_label)} disclosures (last {window_days}d)"
+    ]
+    for entry in items[:15]:
+        date_str = escape(str(entry.get("filing_date") or entry.get("event_date") or "?"))
+        desc = escape(str(entry.get("description") or "Disclosure"))[:200]
+        url = escape(str(entry.get("source_url") or f"https://{source_domain}"))
+        form = escape(str(entry.get("form") or "filing"))
+        lines.append(f'• {date_str} [{form}]: <a href="{url}">{desc}</a>')
+
+    if pulled_at_iso:
+        try:
+            pulled = datetime.fromisoformat(pulled_at_iso)
+            lines.append(f"\nPulled: {_fmt_relative(pulled)} ({source_domain})")
         except (TypeError, ValueError):
             pass
     return "\n".join(lines)

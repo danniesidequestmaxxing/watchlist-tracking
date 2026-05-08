@@ -55,6 +55,58 @@ def is_my_market_open(now: datetime | None = None) -> bool:
     return time(1, 0) <= t < time(9, 0)
 
 
+def is_kr_market_open(now: datetime | None = None) -> bool:
+    """KRX (KOSPI/KOSDAQ): 09:00-15:30 KST = 00:00-06:30 UTC weekdays."""
+    if now is None:
+        now = now_utc()
+    utc = now.astimezone(UTC)
+    if not is_weekday(utc):
+        return False
+    t = utc.time()
+    return time(0, 0) <= t < time(6, 30)
+
+
+def is_jp_market_open(now: datetime | None = None) -> bool:
+    """TSE: 09:00-15:00 JST with a 11:30-12:30 lunch break = 00:00-06:00 UTC weekdays.
+
+    The lunch break is intentionally not modelled — yfinance returns sparse data
+    over it and the TA validator drops the snapshot.
+    """
+    if now is None:
+        now = now_utc()
+    utc = now.astimezone(UTC)
+    if not is_weekday(utc):
+        return False
+    t = utc.time()
+    return time(0, 0) <= t < time(6, 0)
+
+
+def is_tw_market_open(now: datetime | None = None) -> bool:
+    """TWSE: 09:00-13:30 Taipei = 01:00-05:30 UTC weekdays."""
+    if now is None:
+        now = now_utc()
+    utc = now.astimezone(UTC)
+    if not is_weekday(utc):
+        return False
+    t = utc.time()
+    return time(1, 0) <= t < time(5, 30)
+
+
+def is_cn_market_open(now: datetime | None = None) -> bool:
+    """SSE/SZSE: 09:30-11:30 + 13:00-15:00 China = 01:30-03:30 + 05:00-07:00 UTC.
+
+    Modelled as the wider 01:30-07:00 UTC window; the lunch break gap is left
+    to the data adapter (sparse rows get dropped by validation).
+    """
+    if now is None:
+        now = now_utc()
+    utc = now.astimezone(UTC)
+    if not is_weekday(utc):
+        return False
+    t = utc.time()
+    return time(1, 30) <= t < time(7, 0)
+
+
 _DURATION_RE = re.compile(r"^(\d+)\s*([mhd])$", re.IGNORECASE)
 _UNIT_TO_KW = {"m": "minutes", "h": "hours", "d": "days"}
 

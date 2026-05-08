@@ -30,6 +30,8 @@ FINNHUB_API_KEY: str | None = os.getenv("FINNHUB_API_KEY")
 TRADING_ECONOMICS_API_KEY: str | None = os.getenv("TRADING_ECONOMICS_API_KEY")
 TWELVE_DATA_API_KEY: str | None = os.getenv("TWELVE_DATA_API_KEY")
 POLYGON_API_KEY: str | None = os.getenv("POLYGON_API_KEY")
+# Korea DART (opendart.fss.or.kr) — free signup, required for KR filings.
+DART_API_KEY: str | None = os.getenv("DART_API_KEY")
 
 _DATA_SOURCE_KEYS = (
     TOKEN_UNLOCKS_API_KEY,
@@ -38,6 +40,7 @@ _DATA_SOURCE_KEYS = (
     TRADING_ECONOMICS_API_KEY,
     TWELVE_DATA_API_KEY,
     POLYGON_API_KEY,
+    DART_API_KEY,
 )
 if not any(_DATA_SOURCE_KEYS):
     raise ConfigError(

@@ -299,8 +299,15 @@ async def get_crypto_snapshot(
 
 _YF_SUFFIX_BY_ASSET_CLASS: dict[str, str] = {
     "equity_us": "",
-    "equity_my": ".KL",
+    "equity_my": ".KL",  # Bursa is digits-only; we add the suffix.
+    # SGX / KR / JP / TW / CN tickers already include their suffix per
+    # detect_asset_class; the endswith() guard in get_equity_snapshot prevents
+    # double-suffixing.
     "equity_sg": ".SI",
+    "equity_kr": "",
+    "equity_jp": "",
+    "equity_tw": "",
+    "equity_cn": "",
 }
 
 

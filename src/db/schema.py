@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS watchlist (
   user_id INTEGER NOT NULL,
   ticker TEXT NOT NULL,
   asset_class TEXT NOT NULL CHECK(asset_class IN
-    ('crypto','equity_us','equity_my','equity_sg','fx','commodity')),
+    ('crypto','equity_us','equity_my','equity_sg','equity_kr','equity_jp',
+     'equity_tw','equity_cn','fx','commodity')),
   exchange TEXT,
   notes TEXT,
   added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

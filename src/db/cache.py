@@ -27,6 +27,13 @@ TTL_SECONDS: dict[str, int] = {
     "edgar_seen": 90 * 24 * 60 * 60,
     # Phase 10 — Bursa announcements; 6h cache mirrors earnings_calendar cadence.
     "bursa_announcements": 6 * 60 * 60,
+    # Phase 13 — Asia disclosures (Korea/Japan/Taiwan/China). 6h cache.
+    "dart_filings": 6 * 60 * 60,
+    "edinet_filings": 6 * 60 * 60,
+    "mops_announcements": 6 * 60 * 60,
+    "cninfo_announcements": 6 * 60 * 60,
+    # Korea DART corp_code mapping is huge; cache the parsed map for 7 days.
+    "dart_corp_code": 7 * 24 * 60 * 60,
 }
 
 # Tolerated clock skew when accepting a `pulled_at` from an external source.

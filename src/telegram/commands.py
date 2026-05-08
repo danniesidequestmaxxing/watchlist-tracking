@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from src.adapters import bursa
+from src.adapters import bursa, cninfo, dart, edinet, mops
 from src.catalyst.agent import run_catalyst_agent
 from src.config import DB_PATH, OWNER_TELEGRAM_ID, WATCHLIST_LIMIT
 from src.db import catalysts, forwards, health
@@ -25,6 +25,7 @@ from src.telegram.auth import require_owner
 from src.telegram.formatters import (
     format_bursa_catalyst,
     format_catalyst_output,
+    format_disclosure_catalyst,
     format_health,
     format_ta_snapshot,
     format_watchlist,
@@ -33,6 +34,32 @@ from src.utils.asset_class import detect_asset_class
 from src.utils.timestamps import fmt_duration, parse_duration
 
 logger = logging.getLogger(__name__)
+
+
+# Phase 13 — Asia disclosures (KR/JP/TW/CN) bypass the catalyst agent (whose
+# prompt rules don't cover them) and go straight to the local primary source.
+_ASIA_ADAPTERS: dict[str, dict] = {
+    "equity_kr": {
+        "fetch": dart.fetch_disclosures,
+        "label": "DART",
+        "domain": "opendart.fss.or.kr",
+    },
+    "equity_jp": {
+        "fetch": edinet.fetch_disclosures,
+        "label": "EDINET",
+        "domain": "disclosure.edinet-fsa.go.jp",
+    },
+    "equity_tw": {
+        "fetch": mops.fetch_disclosures,
+        "label": "MOPS",
+        "domain": "mops.twse.com.tw",
+    },
+    "equity_cn": {
+        "fetch": cninfo.fetch_disclosures,
+        "label": "CNINFO",
+        "domain": "cninfo.com.cn",
+    },
+}
 
 
 @require_owner
@@ -205,7 +232,15 @@ async def cmd_snapshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 )
                 return
             snapshot = await get_crypto_snapshot(DB_PATH, ticker, entry.exchange)
-        elif entry.asset_class in ("equity_us", "equity_my", "equity_sg"):
+        elif entry.asset_class in (
+            "equity_us",
+            "equity_my",
+            "equity_sg",
+            "equity_kr",
+            "equity_jp",
+            "equity_tw",
+            "equity_cn",
+        ):
             snapshot = await get_equity_snapshot(DB_PATH, ticker, entry.asset_class)
         else:
             await msg.reply_text(f"/snapshot for {entry.asset_class} is not implemented yet.")
@@ -251,6 +286,33 @@ async def cmd_catalyst(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
+    if entry.asset_class in _ASIA_ADAPTERS:
+        adapter = _ASIA_ADAPTERS[entry.asset_class]
+        await msg.reply_text(f"Pulling {adapter['label']} disclosures for {ticker}…")
+        try:
+            result = await adapter["fetch"](DB_PATH, ticker, days_back=30)
+        except Exception as exc:
+            logger.exception("%s fetch failed for %s", adapter["label"], ticker)
+            await msg.reply_text(f"{adapter['label']} lookup failed for {ticker}: {exc}")
+            return
+        if result.get("error"):
+            await msg.reply_text(
+                f"{adapter['label']} returned no data for {ticker}: {result['error']}"
+            )
+            return
+        await msg.reply_text(
+            format_disclosure_catalyst(
+                ticker,
+                result.get("items", []),
+                result.get("pulled_at"),
+                source_label=adapter["label"],
+                source_domain=adapter["domain"],
+            ),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     await msg.reply_text(f"Pulling catalysts for {ticker}…")
     try:
         output = await run_catalyst_agent(ticker, entry.asset_class, DB_PATH)
@@ -271,12 +333,23 @@ async def cmd_catalyst(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await msg.reply_text(format_catalyst_output(output), parse_mode=ParseMode.HTML)
 
 
+_EQUITY_ASSET_CLASSES = (
+    "equity_us",
+    "equity_my",
+    "equity_sg",
+    "equity_kr",
+    "equity_jp",
+    "equity_tw",
+    "equity_cn",
+)
+
+
 async def _ta_for(entry: WatchlistEntry) -> str | None:
     """Return formatted TA for one entry, or None if unsupported / failed."""
     try:
         if entry.asset_class == "crypto" and entry.exchange:
             snap = await get_crypto_snapshot(DB_PATH, entry.ticker, entry.exchange)
-        elif entry.asset_class in ("equity_us", "equity_my", "equity_sg"):
+        elif entry.asset_class in _EQUITY_ASSET_CLASSES:
             snap = await get_equity_snapshot(DB_PATH, entry.ticker, entry.asset_class)
         else:
             return None
@@ -294,6 +367,21 @@ async def _catalyst_for(entry: WatchlistEntry) -> str | None:
             logger.warning("Digest Bursa fetch failed for %s: %s", entry.ticker, exc)
             return None
         return format_bursa_catalyst(entry.ticker, result.get("items", []), result.get("pulled_at"))
+
+    if entry.asset_class in _ASIA_ADAPTERS:
+        adapter = _ASIA_ADAPTERS[entry.asset_class]
+        try:
+            result = await adapter["fetch"](DB_PATH, entry.ticker, days_back=30)
+        except Exception as exc:
+            logger.warning("Digest %s fetch failed for %s: %s", adapter["label"], entry.ticker, exc)
+            return None
+        return format_disclosure_catalyst(
+            entry.ticker,
+            result.get("items", []),
+            result.get("pulled_at"),
+            source_label=adapter["label"],
+            source_domain=adapter["domain"],
+        )
 
     try:
         out = await run_catalyst_agent(entry.ticker, entry.asset_class, DB_PATH)

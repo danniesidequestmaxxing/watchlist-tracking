@@ -27,7 +27,15 @@ from src.telegram.formatters import (
     format_edgar_alert,
     format_ta_snapshot,
 )
-from src.utils.timestamps import is_my_market_open, is_us_market_open, now_kl
+from src.utils.timestamps import (
+    is_cn_market_open,
+    is_jp_market_open,
+    is_kr_market_open,
+    is_my_market_open,
+    is_tw_market_open,
+    is_us_market_open,
+    now_kl,
+)
 
 if TYPE_CHECKING:
     from telegram.ext import Application
@@ -146,6 +154,39 @@ async def refresh_equity_my_ta(app: "Application") -> None:
         if not entry.ta_enabled or is_muted(entry):
             continue
         await _push_snapshot(app, entry)
+
+
+async def _refresh_asia_ta(
+    app: "Application", asset_class: str, market_open_fn, log_label: str
+) -> None:
+    """Generic Asia TA refresh — gated by per-market hours predicate."""
+    if not market_open_fn():
+        logger.info("%s: market closed, suppressing", log_label)
+        return
+    logger.info("%s tick", log_label)
+    entries = await list_entries(DB_PATH, OWNER_TELEGRAM_ID)
+    for entry in entries:
+        if entry.asset_class != asset_class:
+            continue
+        if not entry.ta_enabled or is_muted(entry):
+            continue
+        await _push_snapshot(app, entry)
+
+
+async def refresh_equity_kr_ta(app: "Application") -> None:
+    await _refresh_asia_ta(app, "equity_kr", is_kr_market_open, "ta_refresh_equity_kr")
+
+
+async def refresh_equity_jp_ta(app: "Application") -> None:
+    await _refresh_asia_ta(app, "equity_jp", is_jp_market_open, "ta_refresh_equity_jp")
+
+
+async def refresh_equity_tw_ta(app: "Application") -> None:
+    await _refresh_asia_ta(app, "equity_tw", is_tw_market_open, "ta_refresh_equity_tw")
+
+
+async def refresh_equity_cn_ta(app: "Application") -> None:
+    await _refresh_asia_ta(app, "equity_cn", is_cn_market_open, "ta_refresh_equity_cn")
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +394,42 @@ def register_jobs(scheduler: AsyncIOScheduler, app: "Application") -> None:
         minute=15,
         jitter=60,
         id="ta_refresh_equity_my",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_equity_kr_ta,
+        args=[app],
+        trigger="cron",
+        minute=20,
+        jitter=60,
+        id="ta_refresh_equity_kr",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_equity_jp_ta,
+        args=[app],
+        trigger="cron",
+        minute=25,
+        jitter=60,
+        id="ta_refresh_equity_jp",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_equity_tw_ta,
+        args=[app],
+        trigger="cron",
+        minute=30,
+        jitter=60,
+        id="ta_refresh_equity_tw",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        refresh_equity_cn_ta,
+        args=[app],
+        trigger="cron",
+        minute=35,
+        jitter=60,
+        id="ta_refresh_equity_cn",
         replace_existing=True,
     )
     scheduler.add_job(
